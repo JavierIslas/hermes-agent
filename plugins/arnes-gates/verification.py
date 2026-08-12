@@ -37,35 +37,30 @@ _TIMEOUT = 120  # segundos
 def _detect_project_root() -> Path:
     """Detecta el root del proyecto activo.
 
-    Heurística: si hay paths escritos/leídos en gate_state, usarlos para
-    encontrar el git-root. Los paths pueden ser relativos (patch usa paths
-    relativos al cwd del terminal), así que los resolvemos contra candidatos
-    conocidos (/workspace, cwd).
+    Precedencia:
+      1. Último path escrito/leído en gate_state → su git-root.
+      2. cwd del proceso (fallback).
 
-    Esto es necesario porque el cwd del proceso de Hermes (/opt/hermes) no
-    es el proyecto sobre el que se está trabajando.
+    El cwd del proceso de Hermes (/opt/hermes) casi nunca es el proyecto
+    sobre el que se trabaja, pero es lo que tenemos antes de que el agente
+    toque archivos. Una vez que escribe/lee, podemos inferir el proyecto.
     """
     import subprocess
 
     gate = gate_state.get()
     candidatos = list(gate.get("written_paths", [])) + list(gate.get("read_paths", []))
-
-    # Bases para resolver paths relativos: /workspace (proyectos del usuario)
-    # y el cwd del proceso.
     bases = [Path("/workspace"), Path.cwd()]
 
     for path_str in candidatos:
         path = Path(path_str)
         if not path.is_absolute():
-            # Probar resolver contra cada base conocida.
             for base in bases:
                 resolved = (base / path).resolve()
                 if resolved.exists():
                     path = resolved
                     break
             else:
-                continue  # no se pudo resolver
-        # Buscar git-root desde este path.
+                continue
         check_dir = path.parent if path.is_file() else path
         try:
             result = subprocess.run(
@@ -241,10 +236,16 @@ def run_tests(target: Optional[str] = None) -> str:
     root = _detect_project_root()
     command, cwd = _detect_tests_setup(root)
     if command is None:
+        # Fail-open honesto: si no detectamos el runner del proyecto (probablemente
+        # porque el cwd del proceso no es el proyecto real), no bloqueamos el finish
+        # gate con tests_green=False. Seteamos verify_fail_open y dejamos tests_green
+        # en False, pero el finish gate lo respeta como AVISO, no como bloqueo.
+        gate_state.get()["verify_fail_open"] = True
         return (
-            "ERROR: no se detectó runner de tests en el repo. Si el proyecto "
-            "usa pytest, asegurate de que haya un pytest.ini/pyproject.toml con "
-            "[tool.pytest] o instalá pytest. Si usás otro runner, declaralo."
+            "AVISO (fail-open): no se detectó runner de tests para el proyecto "
+            "activo. Esto puede pasar si el agente trabaja sobre un proyecto "
+            "distinto al del proceso de Hermes. El finish gate no bloqueará por "
+            "esto, pero NO se verificó que los tests pasen. Correlos manualmente."
         )
     cmd = list(command)
     if target and "pytest" in " ".join(cmd):

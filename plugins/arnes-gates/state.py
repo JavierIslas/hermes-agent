@@ -23,6 +23,7 @@ def _new_state() -> dict[str, Any]:
         "tests_green": False,
         "lint_green": False,
         "typecheck_green": False,
+        "verify_fail_open": False,  # True si run_tests no pudo detectar el proyecto (cwd=/opt/hermes)
         # Modo arranque (repo sin codigo previo)
         "modo_arranque": False,
         "spec_done": False,

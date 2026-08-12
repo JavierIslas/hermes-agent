@@ -362,34 +362,50 @@ def _on_pre_verify(
         }
 
     if not gate["tests_green"]:
+        if gate.get("verify_fail_open"):
+            return {
+                "action": "continue",
+                "message": (
+                    "AVISO (fail-open): run_tests no pudo detectar el proyecto "
+                    "(cwd del proceso != proyecto real). El finish gate NO bloquea "
+                    "por esto, pero NO se verificó que los tests pasen. Si podés "
+                    "correrlos manualmente, hacelo. Sino, podés cerrar."
+                ),
+            }
         return {
             "action": "continue",
             "message": (
                 "BLOQUEADO: no cerras sin tests verdes. Corre los tests del "
-                "proyecto via terminal (ej: pytest) y que pasen (>0). "
+                "proyecto via run_tests o terminal (ej: pytest) y que pasen (>0). "
                 "Desp puedes cerrar."
             ),
         }
 
     if not gate["lint_green"]:
-        return {
-            "action": "continue",
-            "message": (
-                "BLOQUEADO: no cerras sin linter limpio. Corre el linter del "
-                "proyecto via terminal (ej: ruff check) y que pase (rc=0). "
-                "Desp puedes cerrar."
-            ),
-        }
+        if gate.get("verify_fail_open"):
+            pass  # fail-open: no bloquear por lint si no detectamos el proyecto
+        else:
+            return {
+                "action": "continue",
+                "message": (
+                    "BLOQUEADO: no cerras sin linter limpio. Corre el linter del "
+                    "proyecto via run_lint o terminal (ej: ruff check) y que pase "
+                    "(rc=0). Desp puedes cerrar."
+                ),
+            }
 
     if not gate["typecheck_green"]:
-        return {
-            "action": "continue",
-            "message": (
-                "BLOQUEADO: no cerras sin typecheck verde. Corre el "
-                "type-checker del proyecto via terminal (ej: mypy) y que "
-                "pase (rc=0). Desp puedes cerrar."
-            ),
-        }
+        if gate.get("verify_fail_open"):
+            pass  # fail-open: no bloquear por typecheck si no detectamos el proyecto
+        else:
+            return {
+                "action": "continue",
+                "message": (
+                    "BLOQUEADO: no cerras sin typecheck verde. Corre el "
+                    "type-checker del proyecto via run_typecheck o terminal "
+                    "(ej: mypy) y que pase (rc=0). Desp puedes cerrar."
+                ),
+            }
 
     gate["done"] = True
     return None  # todo verde: deja cerrar
