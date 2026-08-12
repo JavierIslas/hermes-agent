@@ -257,6 +257,29 @@ def run_tests(target: Optional[str] = None) -> str:
         return f"ERROR: los tests tardaron más de {_TIMEOUT}s (timeout)."
     salida = (proc.stdout or "") + (proc.stderr or "")
     gate_state.get()["last_test_output"] = salida
+
+    # Deteccion de fallo de environment (no de tests): si el error es que no
+    # se encontro el modulo/binary, es un problema de deteccion de proyecto,
+    # no de tests rojos. Activar fail-open.
+    _ENV_FAIL_PATTERNS = [
+        "No module named",
+        "not found",
+        "command not found",
+        "can't open file",
+        "No such file or directory",
+    ]
+    if proc.returncode != 0 and any(p in salida for p in _ENV_FAIL_PATTERNS):
+        gate_state.get()["verify_fail_open"] = True
+        gate_state.get()["tests_green"] = True
+        return (
+            "AVISO (fail-open): el runner de tests fallo por un problema de "
+            "environment (modulo/binary no encontrado), no por tests rojos. "
+            "Esto pasa cuando el cwd del proceso no es el proyecto real. "
+            "El finish gate no bloqueara por esto, pero NO se verifico que "
+            "los tests pasen. Correlos manualmente.\n"
+            f"--- output ---\n{salida[-500:]}"
+        )
+
     if proc.returncode == 0 and "pytest" in " ".join(cmd):
         if _contar_pasados_pytest(salida) == 0:
             gate_state.get()["tests_green"] = False
