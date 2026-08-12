@@ -1,0 +1,16 @@
+name: arnes-gates
+version: "0.1.0"
+description: "Torre de verificacion estructural para coding tasks: gates en codigo (analyze_scope, read-before-write, finish exige tests+lint+typecheck)."
+author: ips-dev
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_verify
+  - on_session_start
+provides_tools:
+  - analyze_scope
+  - find_references
+  - search_semantic
+  - run_tests
+  - run_lint
+  - run_typecheck

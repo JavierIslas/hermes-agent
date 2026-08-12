@@ -1,0 +1,61 @@
+#
+# docker-compose.dev.yml — entorno efímero de desarrollo para el fork.
+#
+# Aísla completamente al fork del Hermes de producción:
+#   - Nombre/imagen distintos (hermes-fork-dev / hermes-agent-fork)
+#   - HERMES_HOME propio (no toca ~/.hermes ni /opt/data de producción)
+#   - Puertos mapeados (no network_mode:host — no compite por puertos)
+#   - Código del fork montado como volumen (cambios en vivo sin rebuild)
+#
+# Uso (efímero — el contenedor se borra al salir):
+#   docker compose -f docker-compose.dev.yml run --rm app bash
+#   # adentro: hermes chat, pytest, python, etc.
+#
+# Para reconstruir la imagen (solo cuando cambian deps del Dockerfile):
+#   docker compose -f docker-compose.dev.yml build
+#
+# El HERMES_HOME del fork vive en el workspace para debuggear fácil:
+#   /workspace/desarrollosPersonales/hermes-fork/.hermes-data/
+# Se crea solo si no existe. Es efímero: se puede borrar y reconstruir.
+#
+# NOTA: Este override NO arranca el gateway (s6). Es para desarrollo
+# interactivo: corrés `hermes chat` o `pytest` manualmente adentro.
+
+services:
+  app:
+    build: .
+    image: hermes-agent-fork
+    container_name: hermes-fork-dev
+    # Sin network_mode:host: mapeamos puertos explícitos para no chocar
+    # con el contenedor de producción (que usa network_mode:host).
+    # Estos puertos son para el dashboard/API si se habilitan; el chat
+    # interactivo no los necesita.
+    ports:
+      - "127.0.0.1:8067:8067"  # dashboard (producción usa 8066)
+    volumes:
+      # HERMES_HOME propio del fork — aislado de producción.
+      # Se crea en el workspace para inspección/debug.
+      - ../.hermes-data:/opt/data
+      # Workspace del usuario (proyectos sobre los que labura el fork).
+      - /home/ips/workspace:/workspace
+      # NOTA: NO montamos el código del fork sobre /opt/hermes porque
+      # pisaría el .venv de la imagen (que vive en /opt/hermes/.venv).
+      # El código entra via `COPY . .` del Dockerfile al hacer build.
+      # Para iterar código del plugin: rebuild de imagen (con Docker
+      # layer cache es rápido — solo el COPY final cambia).
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+      - HERMES_HOME=/opt/data
+      # Permite que write tools toquen el workspace montado.
+      - HERMES_WRITE_SAFE_ROOT=/opt/data:/workspace
+      # El fork usa su propia config — no hereda la de producción.
+      # auth.json, config.yaml, etc. viven en /opt/data del fork.
+    # Entry efímero: bash interactivo. El entrypoint-dispatch del Dockerfile
+    # ya sabe enrutar comandos directos. Overrideamos para forzar bash.
+    entrypoint: ""
+    command: ["bash"]
+    stdin_open: true
+    tty: true
+    # Sin restart: es efímero, no se levanta solo.
+    restart: "no"
