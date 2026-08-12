@@ -38,11 +38,21 @@ services:
       - ../.hermes-data:/opt/data
       # Workspace del usuario (proyectos sobre los que labura el fork).
       - /home/ips/workspace:/workspace
-      # NOTA: NO montamos el código del fork sobre /opt/hermes porque
-      # pisaría el .venv de la imagen (que vive en /opt/hermes/.venv).
-      # El código entra via `COPY . .` del Dockerfile al hacer build.
-      # Para iterar código del plugin: rebuild de imagen (con Docker
-      # layer cache es rápido — solo el COPY final cambia).
+      # ----------------------------------------------------------------
+      # Código del fork montado en vivo para core surgery (Fases 4-5).
+      # Los cambios en el host se ven instantáneamente en el container.
+      # ----------------------------------------------------------------
+      - .:/opt/hermes
+      # Named volumes: preservan los artefactos pesados que el Dockerfile
+      # instala en /opt/hermes y que el bind mount de arriba PISARÍA con
+      # versiones del host (o con nada). En la primera ejecución Docker
+      # copia el contenido de la imagen al named volume; después lo reusa.
+      # Sin esto, el .venv del host (Python 3.11) reemplazaría el de la
+      # imagen (Python del Dockerfile) y todo rompería.
+      - fork_venv:/opt/hermes/.venv
+      - fork_node_modules:/opt/hermes/node_modules
+      - fork_ui_dist:/opt/hermes/ui-tui/dist
+      - fork_playwright:/opt/hermes/.playwright
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
@@ -59,3 +69,12 @@ services:
     tty: true
     # Sin restart: es efímero, no se levanta solo.
     restart: "no"
+
+# Named volumes: persisten entre runs (no se borran con --rm).
+# Esto hace que la primera entrada sea lenta (copia del venv de la imagen)
+# pero las siguientes son instantáneas.
+volumes:
+  fork_venv:
+  fork_node_modules:
+  fork_ui_dist:
+  fork_playwright:
