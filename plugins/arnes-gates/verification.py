@@ -34,12 +34,74 @@ _TIMEOUT = 120  # segundos
 # =============================================================================
 # Detección de runners: HECHOS del filesystem, no asunciones del modelo.
 # =============================================================================
+def _detect_project_root() -> Path:
+    """Detecta el root del proyecto activo.
+
+    Heurística: si hay paths escritos/leídos en gate_state, usarlos para
+    encontrar el git-root. Los paths pueden ser relativos (patch usa paths
+    relativos al cwd del terminal), así que los resolvemos contra candidatos
+    conocidos (/workspace, cwd).
+
+    Esto es necesario porque el cwd del proceso de Hermes (/opt/hermes) no
+    es el proyecto sobre el que se está trabajando.
+    """
+    import subprocess
+
+    gate = gate_state.get()
+    candidatos = list(gate.get("written_paths", [])) + list(gate.get("read_paths", []))
+
+    # Bases para resolver paths relativos: /workspace (proyectos del usuario)
+    # y el cwd del proceso.
+    bases = [Path("/workspace"), Path.cwd()]
+
+    for path_str in candidatos:
+        path = Path(path_str)
+        if not path.is_absolute():
+            # Probar resolver contra cada base conocida.
+            for base in bases:
+                resolved = (base / path).resolve()
+                if resolved.exists():
+                    path = resolved
+                    break
+            else:
+                continue  # no se pudo resolver
+        # Buscar git-root desde este path.
+        check_dir = path.parent if path.is_file() else path
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(check_dir), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                root = Path(result.stdout.strip())
+                if str(root) != "/opt/hermes":
+                    return root
+        except Exception:
+            pass
+
+    return Path.cwd()
+
+
+def _python_for(root: Path) -> str:
+    """Resuelve el Python ejecutable para un proyecto.
+
+    Si el proyecto tiene un venv local (.venv/bin/python), lo usa. Si no,
+    cae a sys.executable (el Python del agente). Esto es clave cuando el
+    agente corre en un entorno (ej: producción) pero trabaja sobre un
+    proyecto con sus propias deps (ej: el fork con su .venv).
+    """
+    venv_python = root / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
+
+
 def _detect_tests_setup(root: Path) -> tuple[list[str] | None, Path | None]:
     """Descubre (command, cwd) de tests desde la config del proyecto."""
     root = Path(root)
     for d in [root, *root.parents]:
         if _es_pytest(d):
-            return ([sys.executable, "-m", "pytest"], d)
+            return ([_python_for(d), "-m", "pytest"], d)
         if _es_npm_test(d):
             return (["npm", "test"], d)
         if (d / "go.mod").exists():
@@ -56,9 +118,9 @@ def _detect_lint_setup(root: Path) -> tuple[list[str] | None, Path | None]:
     root = Path(root)
     for d in [root, *root.parents]:
         if _es_ruff(d):
-            return ([sys.executable, "-m", "ruff", "check"], d)
+            return ([_python_for(d), "-m", "ruff", "check"], d)
         if _es_flake8(d):
-            return ([sys.executable, "-m", "flake8"], d)
+            return ([_python_for(d), "-m", "flake8"], d)
         if _es_eslint(d):
             return (["npx", "eslint"], d)
     return (None, None)
@@ -69,7 +131,7 @@ def _detect_typecheck_setup(root: Path) -> tuple[list[str] | None, Path | None]:
     root = Path(root)
     for d in [root, *root.parents]:
         if _es_mypy(d):
-            return ([sys.executable, "-m", "mypy"], d)
+            return ([_python_for(d), "-m", "mypy"], d)
     return (None, None)
 
 
@@ -171,8 +233,12 @@ def run_tests(target: Optional[str] = None) -> str:
 
     El runner se detecta del filesystem (pytest, npm, go, cargo, make).
     target (opcional) es un path que se le pasa al runner.
+
+    El proyecto se detecta por git-root desde el cwd. Si no hay git, cae
+    al cwd. Esto es necesario porque el cwd del proceso de Hermes puede
+    no ser el proyecto sobre el que se está trabajando.
     """
-    root = Path.cwd()
+    root = _detect_project_root()
     command, cwd = _detect_tests_setup(root)
     if command is None:
         return (
@@ -208,7 +274,7 @@ def run_lint(target: Optional[str] = None) -> str:
 
     El linter se detecta del filesystem (ruff, flake8, eslint).
     """
-    root = Path.cwd()
+    root = _detect_project_root()
     command, cwd = _detect_lint_setup(root)
     if command is None:
         return (
@@ -239,7 +305,7 @@ def run_typecheck(target: Optional[str] = None) -> str:
     El type-checker se detecta del filesystem (mypy).
     Si no hay type-checker declarado, devuelve AVISO (no bloquea — es opt-in).
     """
-    root = Path.cwd()
+    root = _detect_project_root()
     command, cwd = _detect_typecheck_setup(root)
     if command is None:
         # typecheck es opt-in: si no hay type-checker, no se exige.
