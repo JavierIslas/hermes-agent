@@ -21,7 +21,7 @@ from . import memory_scope
 from .gates import analyze_scope
 from .retrieval import find_references, search_semantic
 from .reuse_gates import validar_reuse_en_diff
-from .dup_gates import validar_duplicacion
+from .dup_gates import validar_duplicacion, validar_duplicacion_semantica
 from .terminal_guard import detect_write_command, should_block, extract_write_targets, parse_cd
 from .verification import run_tests, run_lint, run_typecheck
 
@@ -347,6 +347,11 @@ def _check_pre_tool_call(
                 error_dup = validar_duplicacion(content, path)
                 if error_dup is not None:
                     return {"action": "block", "message": error_dup}
+
+                # Gate Q4: duplicación semántica (fail-open sin store).
+                error_sem = validar_duplicacion_semantica(content, path)
+                if error_sem is not None:
+                    return {"action": "block", "message": error_sem}
 
     # Terminal gate: detectar writes via terminal (heredoc, redirect, cp, sed -i).
     # Cierra el escape hatch: si el modelo escribe via terminal en vez de
