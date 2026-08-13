@@ -26,10 +26,12 @@ def reset() -> None:
     _embedder = None
 
 
-def build_for() -> dict[str, Any] | None:
+def build_for(project_root: Path | None = None) -> dict[str, Any] | None:
     """Construye (o carga de cache + reconcilia) el store de embeddings.
 
     Depende del indice estructural (index_service) ya construido.
+    project_root es opcional: se ignora (el root se saca de index_service).
+    Se acepta solo para compatibilidad de firma con index_service.build_for.
     """
     global _store, _embedder
     from . import index_service

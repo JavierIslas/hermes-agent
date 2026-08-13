@@ -214,19 +214,25 @@ def _handle_run_typecheck(args: Dict[str, Any], **_kw: Any) -> str:
 # Hooks (stubs — se implementan en Tasks 1.3 y 1.4).
 # =============================================================================
 def _on_session_start(**_kw: Any) -> None:
-    """Reset del estado de gates al iniciar sesion + construir indice + embeddings + detectar proyecto."""
+    """Reset del estado de gates al iniciar sesion.
+
+    NO construye el indice/embeddings al arrancar. El cwd del proceso de
+    Hermes (/opt/hermes) casi nunca es el proyecto sobre el que el agente
+    va a trabajar. Construir el indice de /opt/hermes (1107 archivos) toma
+    42s la primera vez y es inútil si el agente trabaja en /workspace/...
+
+    El indice se construye de forma LAZY: la primera vez que find_references
+    o search_semantic se llama, o cuando el agente hace cd a un proyecto
+    (detectado via parse_cd en post_tool_call).
+
+    El cache en disco (load_or_build) hace que las construcciones subsecuentes
+    del mismo proyecto tomen <1s (solo reconcile de archivos cambiados).
+    """
     gate_state.reset()
     index_service.reset()
     embedding_service.reset()
     memory_scope.reset()
-    index_service.build_for_cwd()
-    embedding_service.build_for()
-    # Detectar proyecto activo (para scoping de memoria — Fase 4 usará esto).
-    slug = memory_scope.detect_project()
-    logger.debug(
-        "arnes-gates: estado reseteado + indice + embeddings + proyecto=%s",
-        slug,
-    )
+    logger.debug("arnes-gates: sesion iniciada — indice se construira bajo demanda")
 
 
 def _on_pre_tool_call(
@@ -460,6 +466,13 @@ def _on_post_tool_call(
         if new_cwd:
             gate["terminal_cwd"] = new_cwd
             logger.debug("arnes-gates: terminal_cwd actualizado: %s", new_cwd)
+            # Construir el indice del nuevo proyecto si no existe ya.
+            # Esto es lazy: solo se hace cuando el agente navega al proyecto.
+            current_root = index_service.get_root()
+            if current_root is None or str(current_root) != new_cwd:
+                index_service.build_for(Path(new_cwd))
+                embedding_service.build_for(Path(new_cwd))
+                logger.info("arnes-gates: indice construido para %s", new_cwd)
         # Extraer paths de destino y registrarlos en written_paths.
         targets = extract_write_targets(cmd)
         for target in targets:
