@@ -28,8 +28,10 @@ def analyze_scope(
     Esto reemplaza al 'touch .scope-guard-done': el flag lo mueve ESTA funcion,
     y solo si la validacion paso. El modelo no puede moverlo por su cuenta.
 
-    reuse (opcional): abstracciones existentes a reutilizar. En Fase 1 NO se
-    verifica contra el indice (requiere Fase 2). Se acepta pero se ignora.
+    reuse (opcional): abstracciones existentes a reutilizar. Se verifica contra
+    el indice estructural: cada name debe existir y su firma (params, returns)
+    debe calzar con la definicion real. Si no hay indice cargado, se acepta el
+    reuse pero no se verifica (fail-open).
     """
     if impact not in VALID_IMPACT:
         return f"ERROR: impact='{impact}' invalido. Debe ser {sorted(VALID_IMPACT)}."
@@ -44,8 +46,7 @@ def analyze_scope(
             "primero, y vuelve a validar."
         )
 
-    # TODO (Fase 2): validar reuse contra el indice estructural.
-    # Por ahora solo validamos que sea una lista de dicts con "name".
+    # Validar estructura de reuse.
     if reuse:
         for i, item in enumerate(reuse):
             if not isinstance(item, dict) or "name" not in item:
@@ -53,6 +54,11 @@ def analyze_scope(
                     f"ERROR: reuse[{i}] debe ser un objeto con 'name'. "
                     f"Recibido: {item!r}"
                 )
+
+    # Validar reuse contra el indice estructural (si hay indice cargado).
+    error_reuse = _validar_reuse(reuse)
+    if error_reuse is not None:
+        return error_reuse
 
     plan = {
         "impact": impact,
@@ -63,3 +69,63 @@ def analyze_scope(
     gate_state.get()["scope_done"] = True
     gate_state.get()["last_plan"] = plan
     return f"OK: scope aprobado. Plan={plan}. Ya podes escribir codigo."
+
+
+def _validar_reuse(reuse: list[dict[str, Any]] | None) -> str | None:
+    """Verifica cada abstraccion citada contra el indice real.
+
+    None si todo OK (o si no aplica). String de ERROR accionable si falla.
+
+    - reuse vacio → None (no hay nada que verificar).
+    - Sin indice cargado → None (fail-open: no se puede verificar).
+    - Simbolo inexistente → ERROR.
+    - Firma que no calza → ERROR mostrando citada vs real.
+    """
+    if not reuse:
+        return None
+
+    from . import index_service
+    index = index_service.get_index()
+    if index is None:
+        # Sin indice: fail-open. No se puede verificar pero no se bloquea.
+        return None
+
+    from .index import extract_signature, signatures_match
+
+    for cited in reuse:
+        name = cited["name"]
+        candidatos = extract_signature(name, index)
+        if not candidatos:
+            return (
+                f"ERROR: reuse '{name}' no existe en el indice. No citaste "
+                "una abstraccion real. Localizala con find_references y "
+                "releela antes de reutilizarla."
+            )
+        if not any(signatures_match(cited, c) for c in candidatos):
+            return (
+                f"ERROR: la firma citada para '{name}' no calza con la real.\n"
+                f"  citada: {_render_cited(cited)}\n"
+                f"  real:   {_render_real(candidatos[0])}\n"
+                "Relee la definicion con find_references/read_file."
+            )
+    return None
+
+
+def _render_cited(cited: dict[str, Any]) -> str:
+    """Firma citada legible para el mensaje de ERROR."""
+    params = ", ".join(
+        p["name"] + (f": {p['type']}" if p.get("type") else "")
+        for p in cited.get("params") or []
+    )
+    ret = f" -> {cited['returns']}" if cited.get("returns") else ""
+    return f"{cited['name']}({params}){ret}"
+
+
+def _render_real(sym: dict[str, Any]) -> str:
+    """Firma real (del indice) legible para el mensaje de ERROR."""
+    params = ", ".join(
+        p["name"] + (f": {p['type']}" if p["type"] else "")
+        for p in sym.get("params") or []
+    )
+    ret = f" -> {sym['returns']}" if sym.get("returns") else ""
+    return f"{sym['qualname']}({params}){ret}"
