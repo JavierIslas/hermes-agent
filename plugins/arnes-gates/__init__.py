@@ -22,7 +22,7 @@ from .gates import analyze_scope
 from .retrieval import find_references, search_semantic
 from .reuse_gates import validar_reuse_en_diff
 from .dup_gates import validar_duplicacion, validar_duplicacion_semantica
-from .terminal_guard import detect_write_command, should_block, extract_write_targets, parse_cd
+from .terminal_guard import detect_write_command, should_block, extract_write_targets, parse_cd, detect_git_commit
 from .verification import run_tests, run_lint, run_typecheck
 
 logger = logging.getLogger(__name__)
@@ -358,6 +358,42 @@ def _check_pre_tool_call(
     # write_file/patch, exige el mismo scope_done.
     if tool_name == "terminal":
         cmd = args.get("command", "")
+
+        # Gate Q5: commit gate — git commit requiere finish (done=True).
+        if detect_git_commit(cmd):
+            if not gate.get("done"):
+                return {
+                    "action": "block",
+                    "message": (
+                        "BLOQUEADO: no podés commitear sin cerrar con finish "
+                        "primero (falta scope aprobado o verificación de tests). "
+                        "Asegurate de que el finish gate haya pasado antes de "
+                        "materializar el cambio en git."
+                    ),
+                }
+            # done=True: verificar dangling imports si hay indice.
+            from . import index_service
+            index = index_service.get_index()
+            root = index_service.get_root()
+            if index is not None and root is not None:
+                from .index import find_dangling
+                dangling = find_dangling(index, root)
+                if dangling:
+                    detalle = "; ".join(
+                        f"{d['importer']}:{d['lineno']} importa "
+                        f"'{d.get('modulo', '?')}'"
+                        f"{' (' + ', '.join(d['faltantes']) + ')' if d.get('faltantes') else ''}"
+                        for d in dangling
+                    )
+                    return {
+                        "action": "block",
+                        "message": (
+                            f"BLOQUEADO: {len(dangling)} import(s) colgante(s) "
+                            f"— referencias a módulos o símbolos que ya no existen: "
+                            f"{detalle}. Corregí los importadores antes de commitear."
+                        ),
+                    }
+
         detection = detect_write_command(cmd)
         if should_block(detection):
             if not gate["scope_done"]:

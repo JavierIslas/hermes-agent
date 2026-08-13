@@ -49,6 +49,9 @@ _RE_EDITOR = re.compile(
     r"(^|\s)\b(vim?|nano|emacs|vi|ed|ex|pico|micro)\b(\s|$)"
 )
 
+# git commit: comando que materializa cambios en git.
+_RE_GIT_COMMIT = re.compile(r"(^|\s|\|)\bgit\s+commit\b")
+
 
 @dataclass
 class WriteDetection:
@@ -119,6 +122,13 @@ def should_block(detection: WriteDetection) -> bool:
     codigo automaticamente y bloquearia la sesion sin razon.
     """
     return detection.is_write and detection.confidence in ("high", "medium")
+
+
+def detect_git_commit(cmd: str) -> bool:
+    """True si el comando contiene `git commit` (materializacion en git)."""
+    if not cmd:
+        return False
+    return bool(_RE_GIT_COMMIT.search(cmd))
 
 
 def _safe_tokenize(cmd: str) -> list[str]:
