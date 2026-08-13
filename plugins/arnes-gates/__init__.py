@@ -21,6 +21,7 @@ from . import memory_scope
 from .gates import analyze_scope
 from .retrieval import find_references, search_semantic
 from .reuse_gates import validar_reuse_en_diff
+from .dup_gates import validar_duplicacion
 from .terminal_guard import detect_write_command, should_block, extract_write_targets, parse_cd
 from .verification import run_tests, run_lint, run_typecheck
 
@@ -341,6 +342,11 @@ def _check_pre_tool_call(
                 error_reuse = validar_reuse_en_diff(content, gate["written_paths"])
                 if error_reuse is not None:
                     return {"action": "block", "message": error_reuse}
+
+                # Gate Q3: duplicación estructural (solo .py, requiere indice).
+                error_dup = validar_duplicacion(content, path)
+                if error_dup is not None:
+                    return {"action": "block", "message": error_dup}
 
     # Terminal gate: detectar writes via terminal (heredoc, redirect, cp, sed -i).
     # Cierra el escape hatch: si el modelo escribe via terminal en vez de
