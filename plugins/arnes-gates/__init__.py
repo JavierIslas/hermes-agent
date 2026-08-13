@@ -234,10 +234,51 @@ def _on_pre_tool_call(
     args: Optional[Dict[str, Any]] = None,
     **_kw: Any,
 ) -> Optional[Dict[str, Any]]:
-    """Hook pre_tool_call: intercepta tools mutativas (write gate).
+    """Hook pre_tool_call: intercepta tools mutativas (write gate) + circuit breaker.
 
     Devuelve {"action": "block", "message": "..."} para bloquear (Hermes lo
     convierte en el tool_result que ve el modelo). Devuelve None para permitir.
+
+    Wrappea _check_pre_tool_call (la lógica de gates) para contar bloqueos
+    consecutivos y activar el circuit breaker.
+    """
+    gate = gate_state.get()
+
+    # Circuit breaker: si el arnés bloqueó N veces seguidas sin progreso,
+    # bloquear TODAS las tools hasta que el usuario intervenga.
+    BLOCK_THRESHOLD = 5
+    if gate.get("circuit_tripped"):
+        return {
+            "action": "block",
+            "message": (
+                "CIRCUIT BREAKER: el arnés detectó que estás stuck después de "
+                f"{BLOCK_THRESHOLD} bloqueos consecutivos sin progreso. "
+                "Explicale al usuario qué te bloquea y esperá su respuesta. "
+                "No sigas intentando tools."
+            ),
+        }
+
+    # Ejecutar la lógica de gates.
+    result = _check_pre_tool_call(tool_name, args or {}, **_kw)
+
+    # Actualizar block_count.
+    if result is not None and result.get("action") == "block":
+        gate["block_count"] += 1
+        if gate["block_count"] >= BLOCK_THRESHOLD:
+            gate["circuit_tripped"] = True
+    else:
+        # La tool pasó (no se bloqueó): resetear el contador.
+        gate["block_count"] = 0
+
+    return result
+
+
+def _check_pre_tool_call(
+    tool_name: str = "",
+    args: Optional[Dict[str, Any]] = None,
+    **_kw: Any,
+) -> Optional[Dict[str, Any]]:
+    """Lógica de gates (write gate, read_before_write, terminal gate).
 
     Gates que aplica:
       1. scope_done: write_file/patch requieren analyze_scope previo.
@@ -248,8 +289,6 @@ def _on_pre_tool_call(
     """
     args = args or {}
     gate = gate_state.get()
-
-    # Track de reads: registrar paths leidos para read_before_write.
     if tool_name in ("read_file", "search_files"):
         path = args.get("path", "")
         if path:

@@ -25,6 +25,8 @@ def _new_state() -> dict[str, Any]:
         "typecheck_green": False,
         "verify_fail_open": False,  # True si run_tests no pudo detectar el proyecto (cwd=/opt/hermes)
         "terminal_cwd": None,      # cwd del terminal (trackeado via cd). None = usar Path.cwd()
+        "block_count": 0,          # bloqueos consecutivos sin progreso (circuit breaker)
+        "circuit_tripped": False,  # True cuando el circuit breaker activó (bloquea todo)
         # Modo arranque (repo sin codigo previo)
         "modo_arranque": False,
         "spec_done": False,
