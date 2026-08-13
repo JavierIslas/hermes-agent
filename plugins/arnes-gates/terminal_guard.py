@@ -127,3 +127,164 @@ def _safe_tokenize(cmd: str) -> list[str]:
     except ValueError:
         # Comando con quotes desbalanceados: fallback a split por espacios.
         return cmd.split()
+
+
+# =============================================================================
+# extract_write_targets: extrae los paths de destino de un comando que escribe.
+# =============================================================================
+def extract_write_targets(cmd: str) -> list[str]:
+    """Extrae los paths de destino (lo que se escribe) de un comando shell.
+
+    Devuelve una lista de paths (pueden ser relativos). Solo cubre los
+    patrones que detecta should_block — no es un parser shell completo.
+
+    Casos cubiertos:
+      echo x > foo.py           → ["foo.py"]
+      echo x >> foo.py          → ["foo.py"]
+      cat <<EOF > foo.py        → ["foo.py"]
+      cp src.py dst.py          → ["dst.py"]
+      mv old.py new.py          → ["new.py"]
+      sed -i 's/a/b/' f.py      → ["f.py"]
+      dd of=file.bin            → ["file.bin"]
+      tee foo.py                → ["foo.py"]
+      echo x | tee a.py b.py    → ["a.py", "b.py"]
+    """
+    if not cmd or not cmd.strip():
+        return []
+
+    tokens = _safe_tokenize(cmd)
+    targets: list[str] = []
+
+    # 1. Redireccion: el token despues de > o >> es el destino.
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == ">" or tok == ">>":
+            if i + 1 < len(tokens):
+                targets.append(tokens[i + 1])
+                i += 2
+                continue
+        elif tok.startswith(">") and len(tok) > 1 and tok[1] not in (">", "&"):
+            # >archivo pegado al operador.
+            targets.append(tok[1:])
+        elif tok.startswith(">>") and len(tok) > 2:
+            targets.append(tok[2:])
+        i += 1
+
+    # 2. Heredoc: el destino es lo que sigue al > despues del <<MARKER.
+    if _RE_HEREDOC.search(cmd):
+        # Ya cubierto por la redireccion si hay > despues del heredoc.
+        # Si no hay > (heredoc a stdout), no hay archivo destino.
+        pass
+
+    # 3. sed -i: el archivo a editar es el ultimo argumento.
+    if _RE_SED_INPLACE.search(cmd):
+        # sed -i 'expr' file.py → file.py es el ultimo token no-flag.
+        file_args = _extract_sed_target(tokens)
+        targets.extend(file_args)
+
+    # 4. dd of=ARCHIVO.
+    dd_match = re.search(r"\bof=(\S+)", cmd)
+    if dd_match:
+        targets.append(dd_match.group(1))
+
+    # 5. cp/mv: el destino es el ultimo argumento.
+    if _RE_CP.search(cmd) or _RE_MV.search(cmd):
+        dest = _extract_cp_mv_dest(tokens)
+        if dest:
+            targets.append(dest)
+
+    # 6. tee: todos los argumentos son destinos (tee a.py b.py).
+    if _RE_TEE.search(cmd):
+        tee_args = _extract_tee_targets(tokens)
+        targets.extend(tee_args)
+
+    # 7. install: el destino es el ultimo argumento (igual que cp).
+    if _RE_INSTALL.search(cmd):
+        dest = _extract_cp_mv_dest(tokens)
+        if dest:
+            targets.append(dest)
+
+    # Dedup preservando orden.
+    seen: set[str] = set()
+    result: list[str] = []
+    for t in targets:
+        if t and t not in seen:
+            seen.add(t)
+            result.append(t)
+    return result
+
+
+# --- Helpers de extract_write_targets ---
+
+_FLAGS_SED = {"-i", "-n", "-e", "-f", "--in-place", "--quiet", "--expression", "--file"}
+
+
+def _extract_sed_target(tokens: list[str]) -> list[str]:
+    """Extrae el archivo target de sed -i 'expr' file."""
+    result: list[str] = []
+    skip_next = False
+    for i, tok in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            continue
+        if tok in ("-e", "-f", "--expression", "--file"):
+            skip_next = True
+            continue
+        if tok in _FLAGS_SED or tok.startswith("-"):
+            continue
+        if tok == "sed":
+            continue
+        # El primer argumento no-flag despues de -i es la expresion.
+        # Los siguientes son archivos.
+        result.append(tok)
+    # El primer elemento es la expresion sed, no un archivo. Sacarlo.
+    if result:
+        result.pop(0)
+    return result
+
+
+def _extract_cp_mv_dest(tokens: list[str]) -> Optional[str]:
+    """Extrae el destino de cp/mv (ultimo argumento no-flag)."""
+    args: list[str] = []
+    skip_next = False
+    for tok in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if tok in ("-r", "-R", "-f", "-v", "-p", "-i", "--recursive", "--force"):
+            continue
+        if tok.startswith("-") and len(tok) > 1:
+            # Flag con valor pegado o flag largo: skip.
+            continue
+        if tok in ("cp", "mv", "install"):
+            continue
+        args.append(tok)
+    if len(args) >= 2:
+        return args[-1]  # cp src dest → dest
+    return None
+
+
+def _extract_tee_targets(tokens: list[str]) -> list[str]:
+    """Extrae los archivos destino de tee.
+
+    Solo procesa lo que está despues del token 'tee' — ignorando lo
+    que viene del pipe (echo x | tee foo.py → solo foo.py).
+    """
+    result: list[str] = []
+    # Encontrar donde empieza tee.
+    try:
+        tee_idx = tokens.index("tee")
+    except ValueError:
+        return []
+    skip_next = False
+    for tok in tokens[tee_idx + 1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if tok in ("-a", "--append", "-i", "--ignore-interrupts"):
+            continue
+        if tok.startswith("-") and len(tok) > 1:
+            continue
+        result.append(tok)
+    return result

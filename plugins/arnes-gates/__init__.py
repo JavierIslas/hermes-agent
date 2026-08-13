@@ -20,7 +20,7 @@ from . import embedding_service
 from . import memory_scope
 from .gates import analyze_scope
 from .retrieval import find_references, search_semantic
-from .terminal_guard import detect_write_command, should_block
+from .terminal_guard import detect_write_command, should_block, extract_write_targets
 from .verification import run_tests, run_lint, run_typecheck
 
 logger = logging.getLogger(__name__)
@@ -420,15 +420,28 @@ def _on_post_tool_call(
     """Hook post_tool_call: mantener indice incremental tras writes.
 
     Despues de un write_file/patch exitoso, reparsa solo ese archivo y
-    actualiza el indice (no reconstruye todo).
+    actualiza el indice (no reconstruye todo). Tambien registra los paths
+    escritos via terminal (cp, heredoc, sed -i, etc.) en written_paths.
     """
-    if tool_name not in ("write_file", "patch"):
-        return
     args = args or {}
-    path = args.get("path", "")
-    if path:
-        index_service.update_file(path)
-        embedding_service.update_file(path)
+
+    if tool_name in ("write_file", "patch"):
+        path = args.get("path", "")
+        if path:
+            index_service.update_file(path)
+            embedding_service.update_file(path)
+        return
+
+    if tool_name == "terminal":
+        cmd = args.get("command", "")
+        if not cmd:
+            return
+        # Extraer paths de destino y registrarlos en written_paths.
+        targets = extract_write_targets(cmd)
+        gate = gate_state.get()
+        for target in targets:
+            gate["written_paths"].add(target)
+            logger.debug("arnes-gates: terminal write registrado: %s", target)
 
 
 # =============================================================================
