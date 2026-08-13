@@ -20,6 +20,7 @@ from . import embedding_service
 from . import memory_scope
 from .gates import analyze_scope
 from .retrieval import find_references, search_semantic
+from .reuse_gates import validar_reuse_en_diff
 from .terminal_guard import detect_write_command, should_block, extract_write_targets, parse_cd
 from .verification import run_tests, run_lint, run_typecheck
 
@@ -330,6 +331,16 @@ def _check_pre_tool_call(
                 }
             # Track del write (para el finish gate: written_paths no vacio).
             gate["written_paths"].add(path)
+
+            # Gate Q2: validar_reuse_en_diff (solo .py).
+            if path.endswith(".py"):
+                content = args.get("content", "")
+                # patch no tiene "content" pero si "new_string".
+                if not content and tool_name == "patch":
+                    content = args.get("new_string", "")
+                error_reuse = validar_reuse_en_diff(content, gate["written_paths"])
+                if error_reuse is not None:
+                    return {"action": "block", "message": error_reuse}
 
     # Terminal gate: detectar writes via terminal (heredoc, redirect, cp, sed -i).
     # Cierra el escape hatch: si el modelo escribe via terminal en vez de
