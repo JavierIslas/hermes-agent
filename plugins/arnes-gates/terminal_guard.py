@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 
@@ -288,3 +289,52 @@ def _extract_tee_targets(tokens: list[str]) -> list[str]:
             continue
         result.append(tok)
     return result
+
+
+# =============================================================================
+# parse_cd: extrae el nuevo cwd despues de un comando con cd.
+# =============================================================================
+def parse_cd(cmd: str, current_cwd: str | None = None) -> str | None:
+    """Parsea un comando shell y devuelve el nuevo cwd si contiene cd.
+
+    Devuelve None si el comando no contiene cd (el cwd no cambia).
+
+    Casos:
+      cd /workspace/foo           → /workspace/foo
+      cd ../bar                   → resolver relativo a current_cwd
+      cd                          → $HOME (fallback: None, no se puede resolver)
+      cd "path con espacios"      → path con espacios
+      cd subdir && pytest         → subdir (cd al inicio de comando compuesto)
+      cd -                        → None (no podemos saber el cwd anterior)
+
+    Limitacion: cd dentro de subshell (cd foo && ...) dentro de ( ) no
+    cambia el cwd del terminal padre. Eso es correcto.
+    """
+    if not cmd or not cmd.strip():
+        return None
+
+    tokens = _safe_tokenize(cmd)
+
+    # Buscar el primer cd en el comando (cd a principio de comando o
+    # despues de && o ;).
+    for i, tok in enumerate(tokens):
+        if tok != "cd":
+            continue
+        # cd sin argumentos → $HOME. No podemos resolverlo sin el entorno.
+        if i + 1 >= len(tokens) or tokens[i + 1] in ("&&", ";", "|"):
+            return None  # cd sin args → $HOME, no podemos resolver
+        target = tokens[i + 1]
+        # Limpiar ; o && pegados al target (shlex los deja pegados).
+        target = target.rstrip(";")
+        # cd - → directorio anterior, no podemos saberlo.
+        if target == "-":
+            return None
+        # Resolver path.
+        if target.startswith("/"):
+            return target
+        if current_cwd:
+            return str(Path(current_cwd) / target)
+        # Sin current_cwd y path relativo → no podemos resolver.
+        return None
+
+    return None

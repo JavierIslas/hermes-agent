@@ -20,7 +20,7 @@ from . import embedding_service
 from . import memory_scope
 from .gates import analyze_scope
 from .retrieval import find_references, search_semantic
-from .terminal_guard import detect_write_command, should_block, extract_write_targets
+from .terminal_guard import detect_write_command, should_block, extract_write_targets, parse_cd
 from .verification import run_tests, run_lint, run_typecheck
 
 logger = logging.getLogger(__name__)
@@ -436,9 +436,14 @@ def _on_post_tool_call(
         cmd = args.get("command", "")
         if not cmd:
             return
+        gate = gate_state.get()
+        # Trackear cd: actualizar terminal_cwd si el comando contiene cd.
+        new_cwd = parse_cd(cmd, gate.get("terminal_cwd"))
+        if new_cwd:
+            gate["terminal_cwd"] = new_cwd
+            logger.debug("arnes-gates: terminal_cwd actualizado: %s", new_cwd)
         # Extraer paths de destino y registrarlos en written_paths.
         targets = extract_write_targets(cmd)
-        gate = gate_state.get()
         for target in targets:
             gate["written_paths"].add(target)
             logger.debug("arnes-gates: terminal write registrado: %s", target)

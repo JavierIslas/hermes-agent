@@ -38,16 +38,34 @@ def _detect_project_root() -> Path:
     """Detecta el root del proyecto activo.
 
     Precedencia:
-      1. Último path escrito/leído en gate_state → su git-root.
-      2. cwd del proceso (fallback).
+      1. terminal_cwd (trackeado via cd en post_tool_call) → su git-root.
+      2. Último path escrito/leído en gate_state → su git-root.
+      3. cwd del proceso (fallback).
 
     El cwd del proceso de Hermes (/opt/hermes) casi nunca es el proyecto
-    sobre el que se trabaja, pero es lo que tenemos antes de que el agente
-    toque archivos. Una vez que escribe/lee, podemos inferir el proyecto.
+    sobre el que se trabaja. terminal_cwd resuelve el proyecto real cuando
+    el agente hizo cd al directorio del proyecto.
     """
     import subprocess
 
     gate = gate_state.get()
+
+    # 1. terminal_cwd → git-root.
+    terminal_cwd = gate.get("terminal_cwd")
+    if terminal_cwd:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(terminal_cwd), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                root = Path(result.stdout.strip())
+                if str(root) != "/opt/hermes":
+                    return root
+        except Exception:
+            pass
+
+    # 2. Paths escritos/leídos → git-root.
     candidatos = list(gate.get("written_paths", [])) + list(gate.get("read_paths", []))
     bases = [Path("/workspace"), Path.cwd()]
 
