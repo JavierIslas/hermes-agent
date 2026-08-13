@@ -361,51 +361,30 @@ def _on_pre_verify(
             ),
         }
 
-    if not gate["tests_green"]:
-        if gate.get("verify_fail_open"):
-            return {
-                "action": "continue",
-                "message": (
-                    "AVISO (fail-open): run_tests no pudo detectar el proyecto "
-                    "(cwd del proceso != proyecto real). El finish gate NO bloquea "
-                    "por esto, pero NO se verificó que los tests pasen. Si podés "
-                    "correrlos manualmente, hacelo. Sino, podés cerrar."
-                ),
-            }
-        return {
-            "action": "continue",
-            "message": (
-                "BLOQUEADO: no cerras sin tests verdes. Corre los tests del "
-                "proyecto via run_tests o terminal (ej: pytest) y que pasen (>0). "
-                "Desp puedes cerrar."
-            ),
-        }
+    # Gates basados en EVIDENCIA (output crudo), no en booleans flipables.
+    from .evidence import (
+        evaluate_test_evidence,
+        evaluate_lint_evidence,
+        evaluate_typecheck_evidence,
+    )
 
-    if not gate["lint_green"]:
-        if gate.get("verify_fail_open"):
-            pass  # fail-open: no bloquear por lint si no detectamos el proyecto
-        else:
-            return {
-                "action": "continue",
-                "message": (
-                    "BLOQUEADO: no cerras sin linter limpio. Corre el linter del "
-                    "proyecto via run_lint o terminal (ej: ruff check) y que pase "
-                    "(rc=0). Desp puedes cerrar."
-                ),
-            }
+    test_ev = evaluate_test_evidence(gate.get("last_test_output"))
+    if test_ev.verdict == "fail":
+        return {"action": "continue", "message": f"BLOQUEADO: {test_ev.reason}"}
+    if test_ev.verdict == "fail_open":
+        logger.warning("arnes-gates: test evidence fail_open — %s", test_ev.reason)
 
-    if not gate["typecheck_green"]:
-        if gate.get("verify_fail_open"):
-            pass  # fail-open: no bloquear por typecheck si no detectamos el proyecto
-        else:
-            return {
-                "action": "continue",
-                "message": (
-                    "BLOQUEADO: no cerras sin typecheck verde. Corre el "
-                    "type-checker del proyecto via run_typecheck o terminal "
-                    "(ej: mypy) y que pase (rc=0). Desp puedes cerrar."
-                ),
-            }
+    lint_ev = evaluate_lint_evidence(gate.get("last_lint_output"))
+    if lint_ev.verdict == "fail":
+        return {"action": "continue", "message": f"BLOQUEADO: {lint_ev.reason}"}
+    if lint_ev.verdict == "fail_open":
+        logger.warning("arnes-gates: lint evidence fail_open — %s", lint_ev.reason)
+
+    typecheck_ev = evaluate_typecheck_evidence(gate.get("last_typecheck_output"))
+    if typecheck_ev.verdict == "fail":
+        return {"action": "continue", "message": f"BLOQUEADO: {typecheck_ev.reason}"}
+    if typecheck_ev.verdict == "fail_open":
+        logger.warning("arnes-gates: typecheck evidence fail_open — %s", typecheck_ev.reason)
 
     gate["done"] = True
     return None  # todo verde: deja cerrar

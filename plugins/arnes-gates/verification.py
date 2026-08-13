@@ -367,6 +367,7 @@ def run_typecheck(target: Optional[str] = None) -> str:
         gate_state.get()["typecheck_green"] = False
         return f"ERROR: el type-checker tardó más de {_TIMEOUT}s (timeout)."
     salida = (proc.stdout or "") + (proc.stderr or "")
+    gate_state.get()["last_typecheck_output"] = salida
     gate_state.get()["typecheck_green"] = proc.returncode == 0
     if proc.returncode == 0:
         return f"OK: typecheck limpio (rc=0).\n--- output ---\n{salida[-500:]}"

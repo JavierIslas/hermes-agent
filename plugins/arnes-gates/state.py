@@ -29,9 +29,10 @@ def _new_state() -> dict[str, Any]:
         "modo_arranque": False,
         "spec_done": False,
         "spec": None,
-        # Outputs crudos (para el juez / debugging)
+        # Outputs crudos (para el juez / debugging + evidence-based gates)
         "last_test_output": None,
         "last_lint_output": None,
+        "last_typecheck_output": None,
         "last_judge": None,
         "judge_telemetry": [],
         "ask_human_telemetry": [],

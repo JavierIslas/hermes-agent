@@ -155,14 +155,38 @@ def test_write_allowed_after_read(_load_plugin, tmp_path):
 # =============================================================================
 # Tests: finish gate / pre_verify (Task 1.4)
 # =============================================================================
-def test_finish_blocked_without_tests(_load_plugin):
+def test_finish_blocked_with_failed_tests(_load_plugin):
+    """Finish gate bloquea cuando hay evidence de tests fallidos."""
     from hermes_plugins.arnes_gates import analyze_scope, gate_state, _on_pre_verify
     gate_state.reset()
     analyze_scope(impact="BAJO", modules=["auth"], tests_status="covered")
+    # Simular output de tests fallidos (evidence real).
+    gate_state.get()["last_test_output"] = "=== 3 failed in 0.5s ==="
     result = _on_pre_verify(coding=True, changed_paths=["auth.py"])
     assert result is not None
     assert result["action"] == "continue"
-    assert "tests" in result["message"].lower()
+    assert "fail" in result["message"].lower() or "fall" in result["message"].lower()
+
+
+def test_finish_pass_with_green_tests(_load_plugin):
+    """Finish gate deja cerrar cuando hay evidence de tests pasando."""
+    from hermes_plugins.arnes_gates import analyze_scope, gate_state, _on_pre_verify
+    gate_state.reset()
+    analyze_scope(impact="BAJO", modules=["auth"], tests_status="covered")
+    # Simular output de tests pasando.
+    gate_state.get()["last_test_output"] = "=== 10 passed in 0.5s ==="
+    result = _on_pre_verify(coding=True, changed_paths=["auth.py"])
+    assert result is None  # deja cerrar
+
+
+def test_finish_fail_open_no_test_output(_load_plugin):
+    """Finish gate NO bloquea cuando no hay evidence de tests (fail-open)."""
+    from hermes_plugins.arnes_gates import analyze_scope, gate_state, _on_pre_verify
+    gate_state.reset()
+    analyze_scope(impact="BAJO", modules=["auth"], tests_status="covered")
+    # No setear last_test_output → evidence fail_open.
+    result = _on_pre_verify(coding=True, changed_paths=["auth.py"])
+    assert result is None  # fail-open: deja cerrar
 
 
 def test_finish_blocked_without_scope(_load_plugin):
