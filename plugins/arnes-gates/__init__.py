@@ -333,8 +333,9 @@ def _check_pre_tool_call(
             # Track del write (para el finish gate: written_paths no vacio).
             gate["written_paths"].add(path)
 
-            # Gate Q2: validar_reuse_en_diff (solo .py).
-            if path.endswith(".py"):
+            # Gates Q2-Q4: solo para archivos con adapter estructural.
+            from .lang_adapter import get_adapter_for_path as _get_adapter
+            if _get_adapter(path) is not None:
                 content = args.get("content", "")
                 # patch no tiene "content" pero si "new_string".
                 if not content and tool_name == "patch":
@@ -343,7 +344,7 @@ def _check_pre_tool_call(
                 if error_reuse is not None:
                     return {"action": "block", "message": error_reuse}
 
-                # Gate Q3: duplicación estructural (solo .py, requiere indice).
+                # Gate Q3: duplicación estructural (requiere indice).
                 error_dup = validar_duplicacion(content, path)
                 if error_dup is not None:
                     return {"action": "block", "message": error_dup}

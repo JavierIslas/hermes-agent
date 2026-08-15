@@ -39,24 +39,43 @@ def _definiciones(symbol: str, index: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _buscar_usos(symbol: str, root) -> dict[str, list[int]]:
-    """Archivos donde symbol aparece como USO (no definición): ast.Name/Attribute."""
+    """Archivos donde symbol aparece como USO (no definición).
+
+    Usa el adapter de cada archivo. Para Python: ast.Name/Attribute.
+    Para lenguajes sin adapter: se saltea (fail-open).
+    """
     from pathlib import Path
+    from .lang_adapter import get_adapter_for_path
 
     root = Path(root)
     usos = {}
     for p in _iter_py_files(root):
+        adapter = get_adapter_for_path(p)
+        if adapter is None:
+            continue  # sin adapter para este lenguaje
         try:
-            tree = ast.parse(p.read_text(encoding="utf-8"), filename=str(p))
-        except (SyntaxError, UnicodeDecodeError, OSError):
+            source = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
             continue
-        lineas = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id == symbol:
-                lineas.add(node.lineno)
-            elif isinstance(node, ast.Attribute) and node.attr == symbol:
-                lineas.add(node.lineno)
-        if lineas:
-            usos[str(p.relative_to(root))] = sorted(lineas)
+        nombres = adapter.extract_usages(source)
+        if symbol in nombres:
+            # Para Python podemos dar líneas exactas via AST. Para otros
+            # lenguajes, sin info de línea: registramos el archivo completo.
+            if adapter.name == "python":
+                try:
+                    tree = ast.parse(source, filename=str(p))
+                except SyntaxError:
+                    continue
+                lineas = set()
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Name) and node.id == symbol:
+                        lineas.add(node.lineno)
+                    elif isinstance(node, ast.Attribute) and node.attr == symbol:
+                        lineas.add(node.lineno)
+                if lineas:
+                    usos[str(p.relative_to(root))] = sorted(lineas)
+            else:
+                usos[str(p.relative_to(root))] = [0]
     return usos
 
 

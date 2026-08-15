@@ -327,48 +327,62 @@ def _parse_source(source: str, rel: str, root: str | Path) -> dict[str, Any] | N
 
 
 def _parse_file(abs_path: str | Path, root: str | Path) -> dict[str, Any] | None:
-    """Lee un .py y lo parsea -> {module, symbols, imports, hash, mtime} o None.
+    """Lee un archivo y lo parsea via el adapter correspondiente.
 
-    None = archivo binario/ilegible o syntax error. No inventamos símbolos:
-    run_tests atrapará el syntax error igual; el índice simplemente no lo incluye.
+    None = archivo sin adapter, binario/ilegible o syntax error.
+    No inventamos símbolos: run_tests atrapará el syntax error igual; el
+    índice simplemente no lo incluye.
     `mtime`+`hash` permiten a `reconcile` decidir si reparsar sin volver a leer.
     """
+    from .lang_adapter import get_adapter_for_path
+
     path = Path(abs_path)
+    adapter = get_adapter_for_path(path)
+    if adapter is None:
+        return None  # sin adapter: no se indexa
     try:
         source = path.read_text(encoding="utf-8")
     except (UnicodeDecodeError, OSError):
         return None
-    entry = _parse_source(source, str(path.relative_to(root)), root)
+    rel = str(path.relative_to(root))
+    entry = adapter.parse_source(source, rel)
     if entry is None:
         return None
     entry["mtime"] = path.stat().st_mtime
     return entry
 
 
-_PARSEABLE_EXTS = {".py"}  # extensiones que el parser ast realmente maneja (capability)
+_PARSEABLE_EXTS: frozenset[str] = frozenset()  # Dinámico: ver _supported_exts()
+
+
+def _supported_exts() -> frozenset[str]:
+    """Extensiones soportadas por los adapters registrados (lazy import)."""
+    from .lang_adapter import all_extensions
+    return all_extensions() or frozenset({".py"})  # fallback python
 
 
 def _lenguaje_soporta_parser(manifest: Any) -> bool:
-    """True si el lenguaje declarado tiene parser estructural (hoy solo python).
+    """True si hay al menos un adapter registrado con parser estructural.
 
-    Sin manifest (None) o stack python -> True. Otro stack -> False: el índice
-    queda vacío (no hay .py que parsear) y los gates estructurales degradan con
-    AVISO. No se simula verificación que no se puede hacer — la stdlib no parsea
-    JS/Go/Rust, y la regla del proyecto prohíbe dependencias nuevas para parsers.
+    Mantenido por retrocompatibilidad. Sin manifest (None) → True.
     """
     if manifest is None:
         return True
     return getattr(manifest, "stack", "python") == "python"
 
 
-def _es_indexable(path: Path | str, manifest: Any) -> bool:
-    """True si el archivo calza para los gates estructurales: extensión parseable
-    Y lenguaje con parser. python + .py -> True; resto -> False (gates se relajan)."""
-    return Path(path).suffix in _PARSEABLE_EXTS and _lenguaje_soporta_parser(manifest)
+def _es_indexable(path: Path | str, manifest: Any = None) -> bool:
+    """True si el archivo tiene un adapter con parser estructural registrado."""
+    return Path(path).suffix in _supported_exts() and _lenguaje_soporta_parser(manifest)
 
 
-def _iter_source_files(root: str | Path, exts: Iterable[str] = (".py",)) -> Iterator[Path]:
-    """Yield archivos bajo root cuyos sufijos estén en exts, salteando DIRS_RUIDO."""
+def _iter_source_files(root: str | Path, exts: Iterable[str] | None = None) -> Iterator[Path]:
+    """Yield archivos bajo root cuyos sufijos estén en exts, salteando DIRS_RUIDO.
+
+    Si exts es None, usa todas las extensiones de los adapters registrados.
+    """
+    if exts is None:
+        exts = _supported_exts()
     sufijos = set(exts)
     for p in sorted(Path(root).rglob("*")):
         if p.is_file() and p.suffix in sufijos and not any(
@@ -378,8 +392,13 @@ def _iter_source_files(root: str | Path, exts: Iterable[str] = (".py",)) -> Iter
 
 
 def _iter_py_files(root: str | Path) -> Iterator[Path]:
-    """Alias de _iter_source_files(('.py',)) — retrocompat para callers históricos."""
-    return _iter_source_files(root, (".py",))
+    """Alias de _iter_source_files() con todas las extensiones del registry.
+
+    Ya NO es solo .py — itera todas las extensiones que los adapters
+    registrados manejan. Mantiene el nombre por retrocompatibilidad con
+    callers históricos (retrieval.py, build_index, reconcile).
+    """
+    return _iter_source_files(root)
 
 
 # =============================================================================
