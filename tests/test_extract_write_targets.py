@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 
-PLUGIN_DIR = Path(__file__).resolve().parent.parent.parent / "arnes-gates"
+PLUGIN_DIR = Path(__file__).resolve().parent.parent / "plugins" / "arnes-gates"
 
 
 @pytest.fixture(scope="module", autouse=True)

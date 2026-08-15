@@ -2846,10 +2846,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
     # Check plugin hooks for a block or approval directive before executing.
     block_message: Optional[str] = None
+    halt_loop = False
     if not pre_tool_block_checked:
         try:
-            from hermes_cli.plugins import resolve_pre_tool_block
-            block_message = resolve_pre_tool_block(
+            # Fix D5 (arnes-gates): unified seam — (message, halt_loop).
+            from hermes_cli.plugins import resolve_pre_tool_block_details
+            block_message, halt_loop = resolve_pre_tool_block_details(
                 function_name,
                 function_args,
                 task_id=effective_task_id or "",
@@ -2863,6 +2865,30 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             block_message = None
     if block_message is not None:
         result = json.dumps({"error": block_message}, ensure_ascii=False)
+        # Fix D5 (arnes-gates Phase 4): a plugin block carrying halt_loop
+        # escalates to a real ToolGuardrailDecision(halt) so the
+        # conversation loop breaks instead of burning iterations.
+        if halt_loop:
+            try:
+                from agent.tool_guardrails import ToolGuardrailDecision
+
+                controller = getattr(agent, "_tool_guardrails", None)
+                failures = (
+                    controller.same_tool_failure_count(function_name)
+                    if controller is not None
+                    else 0
+                )
+                agent._set_tool_guardrail_halt(
+                    ToolGuardrailDecision(
+                        action="halt",
+                        code="plugin_halt_loop",
+                        message=block_message,
+                        tool_name=function_name,
+                        count=failures,
+                    )
+                )
+            except Exception:
+                pass
         try:
             from model_tools import _emit_post_tool_call_hook
             _emit_post_tool_call_hook(

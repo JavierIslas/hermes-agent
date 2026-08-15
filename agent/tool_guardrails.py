@@ -292,6 +292,10 @@ class ToolCallGuardrailController:
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
+    def same_tool_failure_count(self, tool_name: str) -> int:
+        """Fix D5: failures recorded for ``tool_name`` this turn (any args)."""
+        return self._same_tool_failure_counts.get(tool_name, 0)
+
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
 

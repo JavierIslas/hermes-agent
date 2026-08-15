@@ -1352,8 +1352,14 @@ def handle_function_call(
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
-                from hermes_cli.plugins import resolve_pre_tool_block
-                block_message = resolve_pre_tool_block(
+                # Fix D5 (arnes-gates): unified seam with the executor —
+                # resolve_pre_tool_block_details returns (message, halt_loop).
+                # Direct callers of handle_function_call are not inside the
+                # conversation-loop executor, so the halt escalation flag is
+                # ignored here (no agent handle); blocking behavior is
+                # identical to the previous resolve_pre_tool_block call.
+                from hermes_cli.plugins import resolve_pre_tool_block_details
+                block_message, _halt_loop = resolve_pre_tool_block_details(
                     function_name,
                     function_args,
                     task_id=task_id or "",

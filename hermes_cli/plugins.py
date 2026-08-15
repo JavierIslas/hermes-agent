@@ -2462,6 +2462,7 @@ class _PreToolCallDirective:
     action: Optional[str] = None
     message: Optional[str] = None
     rule_key: Optional[str] = None
+    halt_loop: bool = False
 
 
 def set_thread_tool_whitelist(
@@ -2550,7 +2551,14 @@ def _get_pre_tool_call_directive_details(
         rule_key = rule_key.strip() if isinstance(rule_key, str) else None
         if not rule_key:
             rule_key = None
-        return _PreToolCallDirective(action=action, message=message, rule_key=rule_key)
+        # Fix D5 (arnes-gates): a plugin block may escalate to a real loop
+        # halt — the dispatcher converts this into a ToolGuardrailDecision
+        # so the conversation loop breaks instead of burning iterations on
+        # a tripped circuit breaker.
+        halt_loop = bool(result.get("halt_loop")) if action == "block" else False
+        return _PreToolCallDirective(
+            action=action, message=message, rule_key=rule_key, halt_loop=halt_loop
+        )
 
     return _PreToolCallDirective()
 
@@ -2634,6 +2642,25 @@ def resolve_pre_tool_block(
         tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=middleware_trace,
     )
+    return _resolve_block_from_details(
+        details, tool_name, turn_id=turn_id, tool_call_id=tool_call_id
+    )
+
+
+def _resolve_block_from_details(
+    details: "_PreToolCallDirective",
+    tool_name: str,
+    *,
+    turn_id: str = "",
+    tool_call_id: str = "",
+) -> Optional[str]:
+    """Turn an already-fetched directive into a final block message.
+
+    Shared by :func:`resolve_pre_tool_block` and
+    :func:`resolve_pre_tool_block_details` so the fail-closed approval-gate
+    logic lives in ONE place and the pre_tool_call hook fires exactly once
+    per tool execution regardless of which entry point the dispatcher uses.
+    """
     if details.action == "block":
         return details.message
     if details.action == "approve":
@@ -2674,6 +2701,39 @@ def resolve_pre_tool_block(
                 or f"BLOCKED: plugin approval required for {tool_name}"
             )
     return None
+
+
+def resolve_pre_tool_block_details(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
+    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[Optional[str], bool]:
+    """Resolve the pre_tool_call directive to ``(block_message, halt_loop)``.
+
+    Fix D5 (arnes-gates Phase 4): same resolution path as
+    :func:`resolve_pre_tool_block` — including the fail-closed approval
+    gate — but also surfaces the plugin's ``halt_loop`` escalation flag so
+    the dispatcher can convert a tripped circuit breaker into a real
+    ToolGuardrailDecision(halt) and stop the conversation loop. Callers
+    that ignore the second element behave exactly like
+    ``resolve_pre_tool_block``. The hook still fires exactly once.
+    """
+    details = _get_pre_tool_call_directive_details(
+        tool_name, args, task_id=task_id, session_id=session_id,
+        tool_call_id=tool_call_id, turn_id=turn_id,
+        api_request_id=api_request_id, middleware_trace=middleware_trace,
+    )
+    block_message = _resolve_block_from_details(
+        details, tool_name, turn_id=turn_id, tool_call_id=tool_call_id
+    )
+    if block_message is None:
+        return None, False
+    return block_message, bool(getattr(details, "halt_loop", False))
 
 
 def get_pre_verify_continue_message(

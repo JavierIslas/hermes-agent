@@ -31,6 +31,10 @@ class TestGatewayLifecyclePattern:
         "hermes  gateway  restart",         # double spaces
         "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
         "HERMES GATEWAY RESTART",           # uppercase
+        # Branch D positives: pkill/kill targeting the gateway process.
+        "pkill -f hermes-gateway",
+        "kill the hermes gateway process",
+        "pkill gateway hermes",             # both token orders
     ])
     def test_hermes_gateway_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
@@ -102,6 +106,15 @@ class TestGatewayLifecyclePattern:
         "Monitor the gateway and tell me if a restart is recommended",
         "research how the OpenAI API gateway handles restart after rate limiting",
         "compare AWS API Gateway vs Cloudflare on restart latency",
+        # Dogfooding 2026-08-15 (Fix D8): branch D `p?kill\b` matched the
+        # "kill" substring inside "skill" (no left boundary). Prose combining
+        # "skill" + gateway/hermes identifiers in one line tripped the guard
+        # over text that is not a command. The guard scans the RAW command —
+        # heredoc prose included — so this fired on real plan/skill writes.
+        "cat >> docs.md <<'EOF'\nthe arnes skill guards the hermes gateway\nEOF",
+        "reload the skill that documents hermes gateway setup",
+        "the gateway skill mentions hermes lifecycle",
+        "update skill docs: hermes gateway is managed by systemd",
     ])
     def test_safe_commands(self, text):
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"

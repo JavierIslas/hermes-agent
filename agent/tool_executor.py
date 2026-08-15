@@ -538,14 +538,17 @@ def _run_agent_tool_execution_middleware(
 
         block_message = scope_block
         block_error_type = "tool_scope_block"
+        halt_loop = False
         if block_message is None:
             block_error_type = "plugin_block"
 
             def _resolve_pre_tool_block():
                 try:
-                    from hermes_cli.plugins import resolve_pre_tool_block
+                    from hermes_cli.plugins import (
+                        resolve_pre_tool_block_details,
+                    )
 
-                    return resolve_pre_tool_block(
+                    return resolve_pre_tool_block_details(
                         function_name,
                         final_args,
                         task_id=effective_task_id or "",
@@ -559,11 +562,16 @@ def _run_agent_tool_execution_middleware(
                 except Exception:
                     return None
 
-            block_message = (
+            resolved = (
                 _resolve_pre_tool_block()
                 if authorization_gate is None
                 else authorization_gate.run(_resolve_pre_tool_block)
             )
+            if isinstance(resolved, tuple):
+                block_message, halt_loop = resolved
+            else:
+                # Back-compat: plain block message (e.g. patched in tests).
+                block_message, halt_loop = resolved, False
 
         guardrail_decision = None
         if block_message is None:
@@ -580,6 +588,31 @@ def _run_agent_tool_execution_middleware(
                 result = json.dumps({"error": block_message}, ensure_ascii=False)
                 error_type = block_error_type
                 error_message = block_message
+                # Fix D5 (arnes-gates Phase 4): a plugin block carrying
+                # halt_loop escalates to a real ToolGuardrailDecision(halt)
+                # so the conversation loop breaks (guardrail_halt) instead
+                # of burning iterations against a tripped circuit breaker.
+                if halt_loop:
+                    from agent.tool_guardrails import ToolGuardrailDecision
+
+                    controller = getattr(agent, "_tool_guardrails", None)
+                    try:
+                        failures = (
+                            controller.same_tool_failure_count(function_name)
+                            if controller is not None
+                            else 0
+                        )
+                    except Exception:
+                        failures = 0
+                    agent._set_tool_guardrail_halt(
+                        ToolGuardrailDecision(
+                            action="halt",
+                            code="plugin_halt_loop",
+                            message=block_message,
+                            tool_name=function_name,
+                            count=failures,
+                        )
+                    )
             else:
                 result = agent._guardrail_block_result(guardrail_decision)
                 error_type = "guardrail_block"

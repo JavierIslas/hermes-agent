@@ -125,6 +125,11 @@ DEFAULT_CONFIG = {
         # plausible-looking output when a real path is blocked.  Costs ~80
         # tokens in the cached system prompt.  Set False to disable globally.
         "task_completion_guidance": True,
+        # Worker mode (arnes-gates Phase 4): identity slot of the system
+        # prompt switches from SOUL.md/persona to WORKER.md in HERMES_HOME
+        # (pure coding-agent identity, no personality). When WORKER.md is
+        # absent the slot falls back to the default identity. Default False.
+        "worker_mode": False,
         # Universal parallel-tool-call guidance — short prompt block applied to
         # all models that tells the model to batch independent tool calls
         # (reads, searches, web fetches, read-only commands) into one turn

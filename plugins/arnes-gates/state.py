@@ -27,6 +27,7 @@ def _new_state() -> dict[str, Any]:
         "terminal_cwd": None,      # cwd del terminal (trackeado via cd). None = usar Path.cwd()
         "block_count": 0,          # bloqueos consecutivos sin progreso (circuit breaker)
         "circuit_tripped": False,  # True cuando el circuit breaker activó (bloquea todo)
+        "breaker_turn_id": None,   # turn_id visto en el último pre_api_request (Fix D7: rearme humano)
         # Modo arranque (repo sin codigo previo)
         "modo_arranque": False,
         "spec_done": False,
