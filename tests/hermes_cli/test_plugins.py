@@ -1134,7 +1134,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/safe/dir"}}
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _halt = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/unsafe/dir", "content": "x"}
         )
         assert block_msg is None
@@ -1149,7 +1149,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"content": "fixed"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _halt = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/unsafe", "content": "original"}
         )
         assert block_msg is None
@@ -1164,7 +1164,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/second"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _halt = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/second"}
@@ -1178,7 +1178,7 @@ class TestPreToolCallModify:
                 {"action": "block", "message": "still blocked"},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _halt = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/unsafe"}
         )
         assert block_msg == "still blocked"
@@ -1193,7 +1193,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/invisible"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _halt = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert block_msg == "stopped"
@@ -1207,7 +1207,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/safe"}}
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks("write_file", None)
+        block_msg, modified, _halt = _dispatch_pre_tool_call_hooks("write_file", None)
         assert block_msg is None
         assert modified == {"path": "/safe"}
 
@@ -1217,7 +1217,7 @@ class TestPreToolCallModify:
             "hermes_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: [],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _halt = _dispatch_pre_tool_call_hooks(
             "terminal", {"cmd": "ls"}
         )
         assert block_msg is None
@@ -1233,7 +1233,7 @@ class TestPreToolCallModify:
                 {"action": "modify", "args": {"path": "/real"}},
             ],
         )
-        block_msg, modified = _dispatch_pre_tool_call_hooks(
+        block_msg, modified, _halt = _dispatch_pre_tool_call_hooks(
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/real"}
