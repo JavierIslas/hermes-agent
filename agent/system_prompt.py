@@ -376,7 +376,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
     # cwd project instructions disabled.
     _soul_loaded = False
-    if agent.load_soul_identity or not agent.skip_context_files:
+    if getattr(agent, "worker_mode", False):
+        # Worker mode (arnes-gates F4): the identity slot belongs to
+        # WORKER.md (installed by the plugin, editable by the operator).
+        # Falls back to DEFAULT_AGENT_IDENTITY when the file is absent —
+        # core stays healthy without the plugin.
+        _worker_identity = _r.load_worker_md(_ctx_len)
+        if _worker_identity:
+            stable_parts.append(_worker_identity)
+            _soul_loaded = True
+        else:
+            stable_parts.append(DEFAULT_AGENT_IDENTITY)
+    elif agent.load_soul_identity or not agent.skip_context_files:
         # Scope the SOUL.md read to the agent's OWN home (see _agent_home) —
         # ambient resolution on a thread that lost the HERMES_HOME ContextVar
         # reads the launch profile's SOUL.md instead (#50233).

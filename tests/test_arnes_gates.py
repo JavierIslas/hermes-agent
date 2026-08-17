@@ -17,7 +17,7 @@ import pytest
 # =============================================================================
 # Helper: cargar el plugin como lo hace Hermes (namespace hermes_plugins).
 # =============================================================================
-PLUGIN_DIR = Path(__file__).resolve().parent.parent.parent / "arnes-gates"
+PLUGIN_DIR = Path(__file__).resolve().parent.parent / "plugins" / "arnes-gates"
 
 
 @pytest.fixture(autouse=True)
@@ -153,6 +153,100 @@ def test_write_allowed_after_read(_load_plugin, tmp_path):
 
 
 # =============================================================================
+# Tests: Fix D6 — scope gate custodia solo escrituras fuera de repos git
+# =============================================================================
+def _make_repo(tmp_path):
+    """Repo git minimo (solo el dir .git — la deteccion D6 es de FS)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    return repo
+
+
+def test_write_in_repo_without_scope_passes(_load_plugin, tmp_path):
+    """D6: escribir dentro de un repo git sin analyze_scope → permitido.
+
+    Dentro de un repo toda escritura es reversible (git restore): la
+    reversibilidad ES la autorizacion. Fail-open documentado.
+    """
+    from hermes_plugins.arnes_gates import gate_state, _on_pre_tool_call
+    gate_state.reset()
+    repo = _make_repo(tmp_path)
+    target = repo / "nuevo.py"
+    result = _on_pre_tool_call("write_file", {"path": str(target), "content": "x=1"})
+    assert result is None
+
+
+def test_write_outside_repo_without_scope_blocks(_load_plugin, tmp_path):
+    """D6: escribir fuera de todo repo sin scope → BLOQUEADO como siempre."""
+    from hermes_plugins.arnes_gates import gate_state, _on_pre_tool_call
+    gate_state.reset()
+    target = tmp_path / "suelto.py"  # tmp_path no es repo
+    result = _on_pre_tool_call("write_file", {"path": str(target), "content": "x=1"})
+    assert result is not None
+    assert result["action"] == "block"
+    assert "scope" in result["message"].lower()
+
+
+def test_write_unread_existing_in_repo_still_blocks(_load_plugin, tmp_path):
+    """D6 no toca read_before_write: pisar sin leer sigue bloqueado en repo."""
+    from hermes_plugins.arnes_gates import gate_state, _on_pre_tool_call
+    gate_state.reset()
+    repo = _make_repo(tmp_path)
+    existing = repo / "existe.py"
+    existing.write_text("x = 1\n")
+    result = _on_pre_tool_call("write_file", {"path": str(existing), "content": "x=2"})
+    assert result is not None
+    assert result["action"] == "block"
+    assert "leido" in result["message"].lower()
+
+
+def test_terminal_write_in_repo_without_scope_passes(_load_plugin, tmp_path):
+    """D6 via terminal: heredoc con destino dentro de repo → pasa sin scope."""
+    from hermes_plugins.arnes_gates import gate_state, _on_pre_tool_call
+    gate_state.reset()
+    repo = _make_repo(tmp_path)
+    gate_state.get()["terminal_cwd"] = str(repo)
+    cmd = "cat <<'EOF' > mod.py\nx = 1\nEOF"
+    result = _on_pre_tool_call("terminal", {"command": cmd})
+    assert result is None
+
+
+def test_terminal_write_outside_repo_without_scope_blocks(_load_plugin, tmp_path):
+    """D6 via terminal: heredoc con destino fuera de repo → BLOQUEADO."""
+    from hermes_plugins.arnes_gates import gate_state, _on_pre_tool_call
+    gate_state.reset()
+    gate_state.get()["terminal_cwd"] = str(tmp_path)
+    cmd = "cat <<'EOF' > suelto.py\nx = 1\nEOF"
+    result = _on_pre_tool_call("terminal", {"command": cmd})
+    assert result is not None
+    assert result["action"] == "block"
+    assert "scope" in result["message"].lower()
+
+
+def test_finish_in_repo_without_scope_allows(_load_plugin, tmp_path):
+    """D6: finish con todos los paths dentro de repo → no exige scope.
+
+    Los gates de evidencia (tests/lint) siguen aplicando; solo el ritual
+    de scope queda eximido porque las escrituras fueron en repo.
+    """
+    from hermes_plugins.arnes_gates import gate_state, _on_pre_verify
+    gate_state.reset()
+    repo = _make_repo(tmp_path)
+    result = _on_pre_verify(coding=True, changed_paths=[str(repo / "mod.py")])
+    assert result is None
+
+
+def test_finish_outside_repo_without_scope_blocks(_load_plugin, tmp_path):
+    """D6: finish con paths fuera de repo y sin scope → sigue exigiendo scope."""
+    from hermes_plugins.arnes_gates import gate_state, _on_pre_verify
+    gate_state.reset()
+    result = _on_pre_verify(coding=True, changed_paths=[str(tmp_path / "suelto.py")])
+    assert result is not None
+    assert "scope" in result["message"].lower()
+
+
+# =============================================================================
 # Tests: finish gate / pre_verify (Task 1.4)
 # =============================================================================
 def test_finish_blocked_with_failed_tests(_load_plugin):
@@ -189,10 +283,12 @@ def test_finish_fail_open_no_test_output(_load_plugin):
     assert result is None  # fail-open: deja cerrar
 
 
-def test_finish_blocked_without_scope(_load_plugin):
+def test_finish_blocked_without_scope(_load_plugin, tmp_path):
+    """Fix D6: sin scope, el finish bloquea solo si hay escrituras fuera
+    de todo repo git (dentro de repos la reversibilidad es la autorizacion)."""
     from hermes_plugins.arnes_gates import gate_state, _on_pre_verify
     gate_state.reset()
-    result = _on_pre_verify(coding=True, changed_paths=["x.py"])
+    result = _on_pre_verify(coding=True, changed_paths=[str(tmp_path / "x.py")])
     assert result is not None
     assert "scope" in result["message"].lower()
 

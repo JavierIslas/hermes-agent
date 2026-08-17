@@ -2217,6 +2217,41 @@ def load_soul_md(
         return None
 
 
+def load_worker_md(context_length: Optional[int] = None) -> Optional[str]:
+    """Load WORKER.md from HERMES_HOME and return its content, or None.
+
+    Worker-mode identity (slot #1 in the system prompt when
+    ``agent.worker_mode`` is True) — the exact mirror of :func:`load_soul_md`.
+    When this returns content, ``build_context_files_prompt`` should be
+    called with ``skip_soul=True`` so neither SOUL.md nor WORKER.md is
+    injected twice. Absent/empty file → None → the caller falls back to
+    DEFAULT_AGENT_IDENTITY (core stays healthy without the plugin that
+    would install WORKER.md).
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading WORKER.md: %s", e)
+
+    worker_path = get_hermes_home() / "WORKER.md"
+    if not worker_path.exists():
+        return None
+    try:
+        content = worker_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "WORKER.md")
+        content = _truncate_content(
+            content, "WORKER.md", context_length=context_length,
+            read_path=str(worker_path),
+        )
+        return content
+    except Exception as e:
+        logger.debug("Could not read WORKER.md from %s: %s", worker_path, e)
+        return None
+
+
 def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)

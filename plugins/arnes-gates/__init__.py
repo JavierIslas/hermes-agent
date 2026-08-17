@@ -12,6 +12,7 @@ tocar. El system prompt es advisory; los gates son duros.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from . import state as gate_state
@@ -254,15 +255,23 @@ def _on_pre_tool_call(
 
     # Circuit breaker: si el arnés bloqueó N veces seguidas sin progreso,
     # bloquear TODAS las tools hasta que el usuario intervenga.
+    # Fix D7 (dogfooding 2026-08-15): exentar analyze_scope y lectura — la
+    # salida prescripta del propio breaker ("llama analyze_scope") debe ser
+    # alcanzable desde dentro del turno, o el agente queda en deadlock.
     BLOCK_THRESHOLD = 5
-    if gate.get("circuit_tripped"):
+    _EXEMPT_WHEN_TRIPPED = ("analyze_scope", "read_file", "search_files", "find_references")
+    if gate.get("circuit_tripped") and tool_name not in _EXEMPT_WHEN_TRIPPED:
         return {
             "action": "block",
+            "halt_loop": True,
             "message": (
                 "CIRCUIT BREAKER: el arnés detectó que estás stuck después de "
                 f"{BLOCK_THRESHOLD} bloqueos consecutivos sin progreso. "
-                "Explicale al usuario qué te bloquea y esperá su respuesta. "
-                "No sigas intentando tools."
+                "Explicale al usuario qué te bloquea y esperá su respuesta "
+                "(tu próximo mensaje rearma el breaker). "
+                "Podés seguir leyendo (read_file/search_files/find_references) "
+                "y pidiendo scope (analyze_scope) mientras esperás. "
+                "No sigas intentando tools mutativas."
             ),
         }
 
@@ -306,18 +315,27 @@ def _check_pre_tool_call(
 
     # Write gate: write_file y patch requieren scope + read_before_write.
     if tool_name in ("write_file", "patch"):
-        # Gate 1: scope_done
-        if not gate["scope_done"]:
+        path = args.get("path", "")
+
+        # Gate 1: scope_done. Fix D6 (dogfooding 2026-08-15): el ritual
+        # aplica solo a escrituras FUERA de todo repo git — dentro de un
+        # repo la reversibilidad (git restore) ES la autorizacion. Los
+        # demas gates (read_before_write, Q2-Q4) siguen aplicando igual.
+        resolved = _resolve_write_path(gate, path) if path else None
+        if not gate["scope_done"] and not (
+            resolved is not None and _is_in_git_repo(resolved)
+        ):
             return {
                 "action": "block",
                 "message": (
                     "BLOQUEADO: no hay scope aprobado. Llama analyze_scope "
                     "con un plan valido (impact, modules, tests_status) antes "
-                    "de escribir codigo."
+                    "de escribir codigo. (Si el destino vive dentro de un "
+                    "repo git el ritual no aplica: la reversibilidad es la "
+                    "autorizacion.)"
                 ),
             }
 
-        path = args.get("path", "")
         if path:
             # Gate 2: read_before_write (solo si el archivo existe — crear
             # uno nuevo esta permitido).
@@ -397,7 +415,16 @@ def _check_pre_tool_call(
 
         detection = detect_write_command(cmd)
         if should_block(detection):
-            if not gate["scope_done"]:
+            # Fix D6: el ritual de scope aplica solo si ALGUNO de los
+            # destinos vive fuera de todo repo git. Dentro de un repo la
+            # reversibilidad es la autorizacion.
+            targets = extract_write_targets(cmd)
+            outside = [
+                t for t in targets
+                if not _resolve_write_path(gate, t)
+                or not _is_in_git_repo(_resolve_write_path(gate, t))
+            ]
+            if not gate["scope_done"] and outside:
                 return {
                     "action": "block",
                     "message": (
@@ -409,6 +436,43 @@ def _check_pre_tool_call(
                 }
 
     return None
+
+
+def _resolve_write_path(gate: dict, path: str):
+    """Resuelve un path de escritura (relativo → terminal_cwd o cwd).
+
+    Devuelve None si el path no se puede resolver: en ese caso D6 NO
+    exime (fail-closed: el scope sigue aplicando).
+    """
+    from pathlib import Path
+
+    try:
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            base = gate.get("terminal_cwd") or str(Path.cwd())
+            p = Path(base) / p
+        return p
+    except (OSError, ValueError):
+        return None
+
+
+def _is_in_git_repo(path) -> bool:
+    """True si el path vive dentro de un repo git (algún ancestro tiene .git).
+
+    Detección de FS (walk-up), sin subprocess: barata y hermética. Acepta
+    .git como dir (repo normal) o file (worktree/submodule).
+    """
+    try:
+        current = path.parent if path.is_file() or not path.exists() else path
+        # Si no existe aún (archivo nuevo), partir del directorio contenedor.
+        if current == path:
+            current = path.parent
+        for ancestor in (current, *current.parents):
+            if (ancestor / ".git").exists():
+                return True
+        return False
+    except (OSError, ValueError):
+        return False
 
 
 def _exists_unread(gate: dict, path: str) -> bool:
@@ -456,7 +520,16 @@ def _on_pre_verify(
 
     gate = gate_state.get()
 
-    if not gate["scope_done"]:
+    # Fix D6: el finish gate solo exige scope si alguna escritura quedo
+    # fuera de todo repo git. Si todo vivia en repos, la reversibilidad
+    # ya fue la autorizacion — los gates de evidencia siguen aplicando.
+    _outside = [
+        p for p in (changed_paths or [])
+        if not _resolve_write_path(gate, p)
+        or not _is_in_git_repo(_resolve_write_path(gate, p))
+    ]
+
+    if not gate["scope_done"] and _outside:
         return {
             "action": "continue",
             "message": (
@@ -539,6 +612,32 @@ def _on_post_tool_call(
             logger.debug("arnes-gates: terminal write registrado: %s", target)
 
 
+def _on_pre_api_request(
+    turn_id: str = "",
+    user_message: str = "",
+    **_kw: Any,
+) -> None:
+    """Hook pre_api_request: rearme humano del circuit breaker (Fix D7).
+
+    Se dispara una vez por llamada al LLM. Cuando el turn_id cambia, el
+    usuario escribió un mensaje nuevo — ya interrumpió el loop él mismo:
+    insistir con el breaker solo secuestraría su turno. Rearmar acá
+    (contador a 0, flag abajo) y dejar que el agente reintente con el
+    diagnóstico/autorización que el usuario dio.
+    """
+    gate = gate_state.get()
+    last = gate.get("breaker_turn_id")
+    if turn_id and turn_id != last:
+        gate["breaker_turn_id"] = turn_id
+        if gate.get("circuit_tripped") or gate.get("block_count"):
+            gate["circuit_tripped"] = False
+            gate["block_count"] = 0
+            logger.info(
+                "arnes-gates: circuit breaker rearmed (nuevo turno humano %s)",
+                turn_id,
+            )
+
+
 # =============================================================================
 # Registro del plugin.
 # =============================================================================
@@ -557,6 +656,7 @@ def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("pre_verify", _on_pre_verify)
+    ctx.register_hook("pre_api_request", _on_pre_api_request)
 
     # Tool analyze_scope.
     ctx.register_tool(

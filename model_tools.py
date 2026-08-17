@@ -1385,7 +1385,7 @@ def handle_function_call(
             block_message: Optional[str] = None
             try:
                 from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-                block_message, modified_args = _dispatch_pre_tool_call_hooks(
+                block_message, modified_args, _halt_loop = _dispatch_pre_tool_call_hooks(
                     function_name,
                     function_args,
                     task_id=task_id or "",

@@ -333,7 +333,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     with (
         patch(
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            return_value=("plugin policy", None),
+            return_value=("plugin policy", None, False),
         ),
         patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc,
     ):
@@ -423,3 +423,54 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+# =============================================================================
+# Fix D5: plugin block con halt_loop → ToolGuardrailDecision(halt) en el agente.
+# =============================================================================
+def test_plugin_halt_loop_directive_sets_guardrail_halt():
+    """D5: cuando un plugin bloquea con halt_loop=True, el dispatcher debe
+    convertirlo en un halt real (ToolGuardrailDecision action=halt) para
+    que el conversation loop corte el turno."""
+    agent = _make_agent("write_file")
+    agent._tool_guardrail_halt_decision = None
+    tc = _mock_tool_call("write_file", json.dumps({"path": "/tmp/x.py", "content": "x"}), "c-halt")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    block_msg = "CIRCUIT BREAKER: el arnés detectó que estás stuck."
+    directive = SimpleNamespace(action="block", message=block_msg, halt_loop=True)
+
+    with patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+               return_value=(block_msg, None, True)):
+        agent._execute_tool_calls_sequential(msg, messages, "task-halt")
+
+    # La tool se bloqueó: el resultado lleva el mensaje del breaker.
+    assert messages, "se esperaba al menos un mensaje de tool"
+    assert block_msg in messages[0]["content"]
+    # D5: el halt decision quedó seteado en el agente → conversation loop
+    # hará break en la próxima iteración.
+    halt = agent._tool_guardrail_halt_decision
+    assert halt is not None
+    assert halt.action == "halt"
+    assert halt.tool_name == "write_file"
+    assert block_msg in halt.message
+
+
+def test_plugin_block_without_halt_loop_does_not_set_halt():
+    """Sin halt_loop, un block de plugin es solo un block: no toca el halt
+    decision del agente (contraste con el test anterior)."""
+    agent = _make_agent("write_file")
+    agent._tool_guardrail_halt_decision = SimpleNamespace(action="halt", tool_name="prev", message="prev")
+    tc = _mock_tool_call("write_file", json.dumps({"path": "/tmp/y.py", "content": "y"}), "c-nb")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    block_msg = "BLOQUEADO: no hay scope aprobado."
+
+    with patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+               return_value=(block_msg, None, False)):
+        agent._execute_tool_calls_sequential(msg, messages, "task-nb")
+
+    # Sin halt_loop: el halt decision NO se toca (sigue el previo).
+    assert agent._tool_guardrail_halt_decision.tool_name == "prev"

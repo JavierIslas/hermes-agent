@@ -5951,6 +5951,8 @@ class _PreToolCallDirective:
     message: Optional[str] = None
     rule_key: Optional[str] = None
     modified_args: Optional[Dict[str, Any]] = None
+    # Fix D5 (arnes-gates): a plugin block may escalate to a real loop halt.
+    halt_loop: bool = False
 
 
 def set_thread_tool_whitelist(
@@ -6054,9 +6056,14 @@ def _get_pre_tool_call_directive_details(
         rule_key = rule_key.strip() if isinstance(rule_key, str) else None
         if not rule_key:
             rule_key = None
+        # Fix D5 (arnes-gates): a plugin block may escalate to a real loop
+        # halt — the dispatcher converts this into a ToolGuardrailDecision
+        # so the conversation loop breaks instead of burning iterations on
+        # a tripped circuit breaker.
+        halt_loop = bool(result.get("halt_loop")) if action == "block" else False
         return _PreToolCallDirective(
             action=action, message=message, rule_key=rule_key,
-            modified_args=modified_args,
+            modified_args=modified_args, halt_loop=halt_loop
         )
 
     return _PreToolCallDirective(modified_args=modified_args)
@@ -6216,10 +6223,10 @@ def _dispatch_pre_tool_call_hooks(
     turn_id: str = "",
     api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], bool]:
     """Invoke ``pre_tool_call`` hooks once and process all response types.
 
-    Returns a ``(block_message, modified_args)`` tuple:
+    Returns a ``(block_message, modified_args, halt_loop)`` tuple:
     - ``block_message`` — the first block/approve directive's resolved message
       (or ``None`` when the call may proceed).  Shares the exact fail-closed
       approval-gate logic of :func:`resolve_pre_tool_block` via
@@ -6227,6 +6234,11 @@ def _dispatch_pre_tool_call_hooks(
       context set around the human-approval gate.
     - ``modified_args`` — merged args from ``modify`` directives
       (or ``None`` when no hook requested modification).
+    - ``halt_loop`` — Fix D5 (arnes-gates Phase 4): a plugin ``block``
+      directive may carry ``halt_loop: True`` to escalate into a real
+      ToolGuardrailDecision(halt) so the conversation loop breaks instead
+      of burning iterations on a tripped circuit breaker. Callers outside
+      the conversation loop may ignore it.
 
     This is the single invocation point for ``pre_tool_call`` hooks.
     Callers that only need block detection should keep using
@@ -6244,7 +6256,17 @@ def _dispatch_pre_tool_call_hooks(
         details, tool_name,
         turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
     )
-    return (block_msg, details.modified_args)
+    # Fix D5 (arnes-gates): surface the halt_loop escalation flag only
+    # when the directive actually resolved to a block.
+    # Fix D5 (arnes-gates): surface the halt_loop escalation flag only when
+    # the directive itself is a block (an approve-gate denial escalates the
+    # message but was never a halt_loop directive).
+    halt_loop = (
+        bool(getattr(details, "halt_loop", False))
+        if details.action == "block"
+        else False
+    )
+    return (block_msg, details.modified_args, halt_loop)
 
 
 def get_pre_verify_continue_message(

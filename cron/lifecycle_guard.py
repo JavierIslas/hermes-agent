@@ -76,9 +76,13 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both
-    # token orders because real reproductions show both.
-    r"|(?:p?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:p?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    # token orders because real reproductions show both. The leading `\b`
+    # anchors the verb: without it `p?kill\b` matches the "kill" substring
+    # inside "skill" (dogfooding 2026-08-15, Fix D8) — prose like "update
+    # skill docs: hermes gateway ..." tripped the guard. In "skill" there is
+    # no word boundary between "s" and "kill"; in "kill"/"pkill" there is.
+    r"|(?:\bp?kill\b[^\n]*\bhermes\b[^\n]*\bgateway)"
+    r"|(?:\bp?kill\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
 
 

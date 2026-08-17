@@ -554,6 +554,7 @@ def init_agent(
     gateway_session_key: str = None,
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
+    worker_mode: bool = False,
     skip_memory: bool = False,
     skip_background_review: bool = False,
     session_db=None,
@@ -647,6 +648,10 @@ def init_agent(
     agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity
+    # Worker mode (arnes-gates Phase 4): constructor flag; the config path
+    # (_agent_section["worker_mode"], set further below) ORs into this so
+    # both explicit constructor use and config.yaml agent.worker_mode work.
+    agent.worker_mode = worker_mode
     # Background review (memory/skill) opt-out switch. When True, skips the
     # _spawn_background_review fork at end-of-turn -- avoids ~30K tokens /
     # event of extra LLM cost on cron-style sessions where review forks
@@ -1892,6 +1897,16 @@ def init_agent(
     # applies to ALL models, not just the model families enforcement
     # targets.
     agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
+
+    # Worker mode (arnes-gates Phase 4): swap the identity slot of the
+    # system prompt from SOUL.md/persona to WORKER.md (a pure coding-agent
+    # identity, installed by the arnes-gates plugin but editable by the
+    # operator in HERMES_HOME).  Read BEFORE the system prompt is built and
+    # cached, so the choice is stable for the whole session (prompt-cache
+    # safe).  ORs with the constructor flag so both paths activate it.
+    agent.worker_mode = agent.worker_mode or bool(
+        _agent_section.get("worker_mode", False)
+    )
 
     # Universal parallel-tool-call guidance toggle.  Default True.  Separate
     # flag from task_completion_guidance because a user may want one but not

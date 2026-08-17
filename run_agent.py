@@ -171,6 +171,7 @@ from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock
     build_environment_hints,
     build_nous_subscription_prompt,
     load_soul_md,
+    load_worker_md,
 )
 from agent.process_bootstrap import _get_proxy_from_env  # noqa: F401
 from agent.message_sanitization import (  # noqa: F401
@@ -497,6 +498,7 @@ class AIAgent:
         gateway_session_key: str = None,
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
+        worker_mode: bool = False,
         skip_memory: bool = False,
         skip_background_review: bool = False,
         session_db=None,
@@ -585,6 +587,7 @@ class AIAgent:
             gateway_session_key=gateway_session_key,
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
+            worker_mode=worker_mode,
             skip_memory=skip_memory,
             skip_background_review=skip_background_review,
             session_db=session_db,
