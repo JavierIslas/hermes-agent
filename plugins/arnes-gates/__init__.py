@@ -12,6 +12,7 @@ tocar. El system prompt es advisory; los gates son duros.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from . import state as gate_state
