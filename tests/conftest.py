@@ -1737,3 +1737,36 @@ def _moa_caches_isolated():
     yield
     moa._preset_cache.clear()
     moa._runtime_cache.clear()
+
+
+# =============================================================================
+# arnes-gates plugin loading (single source for plugin test files)
+# =============================================================================
+# Loads the plugin from the CANONICAL copy inside the repo (plugins/arnes-gates),
+# never the external orphan copy — see the symlink pitfall in the arnes-gates
+# skill. Module-scoped: loads once per pytest process.
+@pytest.fixture(scope="module")
+def arnes_plugin():
+    import importlib.util
+    import sys
+    import types
+    from pathlib import Path
+
+    plugin_dir = Path(__file__).resolve().parent.parent / "plugins" / "arnes-gates"
+    if "hermes_plugins" not in sys.modules:
+        ns = types.ModuleType("hermes_plugins")
+        ns.__path__ = []
+        ns.__package__ = "hermes_plugins"
+        sys.modules["hermes_plugins"] = ns
+    if "hermes_plugins.arnes_gates" not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            "hermes_plugins.arnes_gates",
+            str(plugin_dir / "__init__.py"),
+            submodule_search_locations=[str(plugin_dir)],
+        )
+        module = importlib.util.module_from_spec(spec)
+        module.__package__ = "hermes_plugins.arnes_gates"
+        module.__path__ = [str(plugin_dir)]
+        sys.modules["hermes_plugins.arnes_gates"] = module
+        spec.loader.exec_module(module)
+    return sys.modules["hermes_plugins.arnes_gates"]
