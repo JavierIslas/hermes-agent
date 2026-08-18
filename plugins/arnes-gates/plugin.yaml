@@ -7,6 +7,7 @@ provides_hooks:
   - post_tool_call
   - pre_verify
   - on_session_start
+  - transform_llm_output
 provides_tools:
   - analyze_scope
   - find_references

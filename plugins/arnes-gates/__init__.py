@@ -25,8 +25,13 @@ from .reuse_gates import validar_reuse_en_diff
 from .dup_gates import validar_duplicacion, validar_duplicacion_semantica
 from .terminal_guard import detect_write_command, should_block, extract_write_targets, parse_cd, detect_git_commit
 from .verification import run_tests, run_lint, run_typecheck
+from . import presenter as presenter_mod
 
 logger = logging.getLogger(__name__)
+
+# PluginContext del registro (Fase 5): el presenter lo usa para ctx.llm y
+# ctx.get_config. None hasta que register() corre (tests: se inyecta directo).
+_PRESENTER_CTX: Any = None
 
 
 # =============================================================================
@@ -216,6 +221,99 @@ def _handle_run_typecheck(args: Dict[str, Any], **_kw: Any) -> str:
 # =============================================================================
 # Hooks (stubs — se implementan en Tasks 1.3 y 1.4).
 # =============================================================================
+
+# =============================================================================
+# Fase 5: presenter — vestir la entrega sin contaminar al worker
+# =============================================================================
+# Routing (las cinco condiciones, diseno 2026-08-18):
+#   (a) presenter_mode != "off" — default OFF: deploy inerte, se activa con
+#       plugins.entries.arnes-gates.settings.presenter_mode: on
+#   (b) worker_mode activo (config del core: agent.worker_mode) — si el modelo
+#       YA habla con la persona en su system prompt, vestir seria doble
+#   (c) platform != "subagent" — los hijos de delegate_task corren con
+#       platform="subagent": la persona no contamina sus resumenes
+#   (d) el turno uso tools — charla pura no se viste
+#   (e) SOUL.md existe y el output no esta vacio (verificado dentro de
+#       Presenter.present, fail-open)
+
+
+def _presenter_mode() -> str:
+    """Lee presenter_mode de la config del plugin (default "off")."""
+    if _PRESENTER_CTX is None:
+        return "off"
+    try:
+        mode = _PRESENTER_CTX.get_config("presenter_mode", "off")
+    except Exception:
+        return "off"
+    return mode if isinstance(mode, str) and mode.strip() else "off"
+
+
+def _worker_mode_active() -> bool:
+    """True si agent.worker_mode esta prendido en la config del core.
+
+    Lectura directa de config (load_config_readonly), sin referencia al
+    agente vivo: el hook no recibe el agente, y la config no cambia
+    mid-session. Default False (presenter inerte sin worker_mode).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        agent_section = cfg.get("agent") if isinstance(cfg, dict) else None
+        return bool(agent_section.get("worker_mode", False)) if isinstance(agent_section, dict) else False
+    except Exception:
+        return False
+
+
+def _presenter_enabled_for(platform: str) -> bool:
+    """Condiciones (a)+(b)+(c): config + anti double-dressing + no subagent."""
+    if _presenter_mode() == "off":
+        return False
+    if not _worker_mode_active():
+        return False
+    if platform and platform == "subagent":
+        return False
+    return True
+
+
+def _on_transform_llm_output(
+    response_text: str = "",
+    session_id: str = "",
+    model: str = "",
+    platform: str = "",
+    **_kw: Any,
+) -> Optional[str]:
+    """Hook transform_llm_output: viste SOLO la entrega al usuario.
+
+    El core dispara esto una vez por turno, DESPUES de persistir el mensaje
+    assistant (turn_finalizer.py): el transcript queda RAW — el worker de
+    turnos futuros nunca ve el texto vestido. Contrato del canal: primer
+    string no-vacio gana; None = no transformar.
+    """
+    gate = gate_state.get()
+    if not _presenter_enabled_for(platform):
+        return None
+    if gate.get("presenter_tool_calls", 0) <= 0:
+        return None  # (d) charla pura: no se viste
+    if _PRESENTER_CTX is None:
+        return None
+    try:
+        p = presenter_mod.Presenter(_PRESENTER_CTX.llm)
+    except Exception as exc:
+        logger.debug("presenter: ctx.llm no disponible, sin vestir (%s)", exc)
+        return None
+    dressed = p.present(response_text)
+    # present() es fail-open (devuelve el original ante cualquier fallo):
+    # solo reportamos transformacion si realmente cambio algo.
+    if dressed and dressed.strip() and dressed.strip() != response_text.strip():
+        gate["presenter_dressed_count"] = gate.get("presenter_dressed_count", 0) + 1
+        logger.info(
+            "arnes-gates: presenter vistio la entrega (turno con %d tools)",
+            gate.get("presenter_tool_calls", 0),
+        )
+        return dressed
+    return None
+
+
 def _on_session_start(**_kw: Any) -> None:
     """Reset del estado de gates al iniciar sesion.
 
@@ -290,6 +388,20 @@ def _on_pre_tool_call(
     return result
 
 
+
+
+def _platform_kw(_kw: Dict[str, Any]) -> str:
+    """Platform del pre_tool_call si viene en kwargs; "" si no.
+
+    El dispatch de pre_tool_call no incluye platform (solo transform_llm_output
+    lo recibe). Los subagentes corren sin clarify_callback (delegate_tool pasa
+    callback=None), asi que clarify nunca ejecuta en platform=subagent: la
+    condicion (c) queda cubierta estructuralmente para este branch.
+    """
+    val = _kw.get("platform", "")
+    return val if isinstance(val, str) else ""
+
+
 def _check_pre_tool_call(
     tool_name: str = "",
     args: Optional[Dict[str, Any]] = None,
@@ -311,6 +423,29 @@ def _check_pre_tool_call(
         if path:
             gate["read_paths"].add(path)
             gate["ever_read"].add(path)
+        return None
+
+    # Fase 5 (Task 5.2): clarify vestido via modify directive.
+    # El seam triada de D5 aplica modified_args ANTES del dispatch: la
+    # plataforma renderiza la pregunta vestida y clarify_tool devuelve la
+    # eleccion canonica (strip_recommended). Choices intactas: son canonicas.
+    # Sin routing (off / sin worker_mode / sin tools en el turno): None.
+    if tool_name == "clarify":
+        question = args.get("question", "")
+        if (
+            question
+            and _presenter_enabled_for(platform=_platform_kw(_kw))
+            and gate.get("presenter_tool_calls", 0) > 0
+            and _PRESENTER_CTX is not None
+        ):
+            try:
+                pres = presenter_mod.Presenter(_PRESENTER_CTX.llm)
+                dressed = pres.dress_question(question)
+            except Exception as exc:
+                logger.debug("presenter: fail-open en clarify (%s)", exc)
+                dressed = None
+            if dressed and dressed.strip() and dressed.strip() != question.strip():
+                return {"action": "modify", "args": {"question": dressed}}
         return None
 
     # Write gate: write_file y patch requieren scope + read_before_write.
@@ -610,6 +745,12 @@ def _on_post_tool_call(
     """
     args = args or {}
 
+    # Fase 5: latch del presenter — toda tool ejecutada cuenta como "turno con
+    # tools" para el routing (condicion d). Se resetea solo en pre_api_request
+    # cuando cambia el turn_id (patron D7), nunca aca ni en transform.
+    gate = gate_state.get()
+    gate["presenter_tool_calls"] = gate.get("presenter_tool_calls", 0) + 1
+
     if tool_name in ("write_file", "patch"):
         path = args.get("path", "")
         if path:
@@ -658,6 +799,8 @@ def _on_pre_api_request(
     last = gate.get("breaker_turn_id")
     if turn_id and turn_id != last:
         gate["breaker_turn_id"] = turn_id
+        # Fase 5: turno nuevo = latch del presenter en cero (patron D7).
+        gate["presenter_tool_calls"] = 0
         if gate.get("circuit_tripped") or gate.get("block_count"):
             gate["circuit_tripped"] = False
             gate["block_count"] = 0
@@ -686,6 +829,12 @@ def register(ctx) -> None:
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("pre_verify", _on_pre_verify)
     ctx.register_hook("pre_api_request", _on_pre_api_request)
+
+    # Fase 5: presenter. El ctx queda disponible para ctx.llm / ctx.get_config
+    # en los hooks del presenter (transform_llm_output + branch clarify).
+    global _PRESENTER_CTX
+    _PRESENTER_CTX = ctx
+    ctx.register_hook("transform_llm_output", _on_transform_llm_output)
 
     # Tool analyze_scope.
     ctx.register_tool(

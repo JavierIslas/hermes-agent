@@ -28,6 +28,10 @@ def _new_state() -> dict[str, Any]:
         "block_count": 0,          # bloqueos consecutivos sin progreso (circuit breaker)
         "circuit_tripped": False,  # True cuando el circuit breaker activó (bloquea todo)
         "breaker_turn_id": None,   # turn_id visto en el último pre_api_request (Fix D7: rearme humano)
+        # Fase 5: presenter (vestir la entrega sin contaminar al worker)
+        "presenter_tool_calls": 0,  # latch: tools ejecutadas en el turno (reset por turn_id nuevo, patron D7)
+        "presenter_turn_id": None,  # turn_id del último pre_api_request visto por el latch
+        "presenter_dressed_count": 0,  # telemetría: entregas vestidas en la sesión
         # Modo arranque (repo sin codigo previo)
         "modo_arranque": False,
         "spec_done": False,
