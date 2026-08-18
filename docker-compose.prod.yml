@@ -1,0 +1,62 @@
+#
+# docker-compose.prod.yml — producción sobre el FORK (Opción A, 2026-08-17).
+#
+# Reemplaza al compose del clon upstream (~/.hermes/hermes-agent) cuando se
+# quiere el core del fork (seam tríada D5 + arnes-gates bundled).
+#
+# Filosofía (decisión del usuario): deploy EXPLÍCITO — nada llega a producción
+# sin `git push` al fork + `git pull` acá + `docker compose up -d --build`.
+# El auto-update del clon upstream (checkout main + reset --hard) no toca
+# este archivo: vive en el fork, se versiona con el código que despliega.
+#
+# Uso (en el HOST, desde este directorio):
+#   cd ~/workspace/desarrollosPersonales/hermes-fork/hermes-agent
+#   HERMES_UID=$(id -u) HERMES_GID=$(id -g) \
+#     docker compose -f docker-compose.prod.yml up -d --build
+#
+# Rollback (volver a la imagen oficial):
+#   cd ~/.hermes/hermes-agent && HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d
+#   (el compose upstream recrea ambos contenedores sobre hermes-agent oficial)
+#
+# Notas:
+# - Imagen con tag PROPIO (hermes-agent-fork): la oficial (hermes-agent) queda
+#   intacta como fallback — rollback = recrear contenedores, sin rebuild.
+# - plugins/arnes-gates va BUNDLED en la imagen (COPY . . → /opt/hermes/plugins/).
+#   El symlink ~/.hermes/plugins/arnes-gates (=/opt/data/plugins/...) sigue
+#   vivo y lo PISA por diseño del loader ("user plugin replaces bundled"):
+#   mismo código hoy, canal de hot-patch conservado. Si algún día se quiere
+#   correr el bundled puro, basta remover el symlink.
+# - HERMES_WRITE_SAFE_ROOT vive en ~/.hermes/.env (volumen) — sobrevive.
+#
+services:
+  gateway:
+    build: .
+    image: hermes-agent-fork
+    container_name: hermes
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ~/.hermes:/opt/data
+      - /home/ips/workspace:/workspace
+      # Stub de systemd-resolved (127.0.0.53) en vez de la copia congelada de
+      # Docker. Requiere network_mode: host. (Parche homelab, igual que prod.)
+      - ~/.hermes/cache/resolv-stub.conf:/etc/resolv.conf:ro
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+    command: ["gateway", "run"]
+
+  dashboard:
+    image: hermes-agent-fork
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - gateway
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+    # Localhost-only. Remoto: ssh -L 9119:localhost:9119
+    command: ["dashboard", "--host", "127.0.0.1", "--no-open"]
