@@ -58,6 +58,10 @@ DIRS_RUIDO = {
     "node_modules",
     ".mypy_cache",
     ".pytest_cache",
+    # Runtime de Python que uv puede descargar DENTRO del repo (detectado
+    # 2026-08-17: .hermes-runtime/python/cpython-3.11 con pip/setuptools
+    # vendored indexado como código del proyecto → 60+ falsos dangling).
+    ".hermes-runtime",
 }
 
 
@@ -535,6 +539,12 @@ def _names_faltantes(
         # target es un package cuyo __init__ se indexa como "{target}.__init__": los
         # names públicos del package viven en su __init__.
         definidos = nombres_def_por_mod.get(f"{target}.__init__", set())
+    # PEP 562: si el módulo (o su __init__) define __getattr__ a nivel módulo,
+    # resuelve nombres dinámicamente — imposible de verificar estáticamente.
+    # Fail-open: ningún from-import de ese módulo cuenta como dangling
+    # (caso real: tools/skills_hub.py expone SKILLS_DIR/HUB_DIR vía __getattr__).
+    if "__getattr__" in definidos:
+        return []
     faltan = []
     for nombre in names:
         if nombre in definidos:
