@@ -381,16 +381,36 @@ def _check_pre_tool_call(
         # Gate Q5: commit gate — git commit requiere finish (done=True).
         if detect_git_commit(cmd):
             if not gate.get("done"):
-                return {
-                    "action": "block",
-                    "message": (
-                        "BLOQUEADO: no podés commitear sin cerrar con finish "
-                        "primero (falta scope aprobado o verificación de tests). "
-                        "Asegurate de que el finish gate haya pasado antes de "
-                        "materializar el cambio en git."
-                    ),
-                }
-            # done=True: verificar dangling imports si hay indice.
+                # Fix D11 (2026-08-18): evidencia fresca como alternativa a
+                # done. El finish gate solo corre al CIERRE del turno, pero el
+                # commit suele intentarce en el turno SIGUIENTE (el gate
+                # bloqueó, el turno cerró sin prender done, el nuevo turno ya
+                # no tiene edits → el finish gate ni se dispara). Sin esta
+                # puerta, sesiones no-coding quedaban con bloqueo PERMANENTE.
+                # La evidencia es la MISMA que el finish gate evalúa: scope
+                # aprobado + tests pass + lint pass en el state del turno.
+                from .evidence import evaluate_test_evidence, evaluate_lint_evidence
+
+                _test_ev = evaluate_test_evidence(gate.get("last_test_output"))
+                _lint_ev = evaluate_lint_evidence(gate.get("last_lint_output"))
+                _fresh = (
+                    gate.get("scope_done")
+                    and _test_ev.verdict == "pass"
+                    and _lint_ev.verdict == "pass"
+                )
+                if not _fresh:
+                    return {
+                        "action": "block",
+                        "message": (
+                            "BLOQUEADO: no podés commitear sin cerrar con finish "
+                            "primero (falta scope aprobado o verificación de tests). "
+                            "Asegurate de que el finish gate haya pasado antes de "
+                            "materializar el cambio en git."
+                        ),
+                    }
+                # Evidencia fresca: tratar como done — sigue el chequeo de
+                # dangling imports abajo.
+            # done=True (o evidencia fresca): verificar dangling imports si hay indice.
             from . import index_service
             index = index_service.get_index()
             root = index_service.get_root()
@@ -514,9 +534,18 @@ def _on_pre_verify(
     terminal para detectar automaticamente el resultado, el gate confia en que
     el modelo reporte via la tool run_tests (TODO Fase 2) o lo setee manualmente.
     Por ahora, si no hay evidencia, bloquea guiando al modelo a correrlos.
+
+    Fix D11 (2026-08-18): el early-return `if not coding` dejaba `done` muerto
+    en sesiones no-coding (cwd fuera de todo workspace de código — p.ej. una
+    sesión del agente que trabaja SOBRE el repo desde /opt/hermes), y el
+    commit gate exigía done=True → bloqueo PERMANENTE. Ahora: sin
+    changed_paths se deja cerrar como siempre; con changed_paths el ritual
+    aplica IGUAL (scope para lo fuera-de-repo + evidencia), coding o no. La
+    única diferencia es que coding=False no es excusa para saltarse el
+    ritual: es excusa para nada, porque el ritual no depende del contexto.
     """
-    if not coding or not changed_paths:
-        return None  # no es task de codigo: deja cerrar
+    if not changed_paths:
+        return None  # nada cambiado: deja cerrar
 
     gate = gate_state.get()
 
