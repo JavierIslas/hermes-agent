@@ -62,6 +62,10 @@ DIRS_RUIDO = {
     # 2026-08-17: .hermes-runtime/python/cpython-3.11 con pip/setuptools
     # vendored indexado como código del proyecto → 60+ falsos dangling).
     ".hermes-runtime",
+    # Archivo del clon upstream+homelab anterior (mudanza 2026-08-18/19,
+    # incluyendo su venv con site-packages completo: PIL/aiohttp/... → 168
+    # falsos dangling contra el commit gate). Es historia, no codebase.
+    "bk",
 }
 
 

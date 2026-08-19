@@ -20,9 +20,12 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Timeout (segundos) para la llamada de vestir: corta para no colgar el
-# cierre del turno; al vencer, fail-open al texto original.
-_DRESS_TIMEOUT_S = 20.0
+# Timeout (segundos) para la llamada de vestir. Dogfood 2026-08-19: con
+# glm-5.3, 20s alcanzaba solo para outputs cortos (~80 chars vistieron en
+# ~8s); los turnos reales de coding (~2K chars) timeoutaban y fail-openeaban
+# al crudo (2 de 3 disparos). Orden del usuario: 1 minuto ("puedo esperar").
+# Al vencer, fail-open al texto original.
+_DRESS_TIMEOUT_S = 60.0
 
 
 def _load_soul() -> Optional[str]:

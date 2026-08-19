@@ -42,6 +42,28 @@ class TestDanglingExcludes:
         assert "app.py" in files
         assert not any(".hermes-runtime" in f for f in files), files
 
+    def test_bk_archive_no_se_indexa(self, arnes_plugin, tmp_path):
+        """bk/ (archivo del clon anterior con su venv) no debe entrar al índice.
+
+        Dogfood 2026-08-19: la mudanza dejó /opt/data/hermes-agent/bk/ con el
+        clon upstream+homelab VIEJO (HEAD ca6b1b35a) incluyendo su venv con
+        site-packages completo — el índice lo trató como código del proyecto
+        y el commit gate bloqueó con 168 falsos dangling (PIL/aiohttp/...).
+        Mismo shape que D10 (.hermes-runtime): directorio de archivo no es
+        codebase.
+        """
+        (tmp_path / "app.py").write_text("X = 1\n", encoding="utf-8")
+        venv = tmp_path / "bk" / "venv" / "lib" / "python3.11" / "site-packages"
+        venv.mkdir(parents=True)
+        (venv / "pil_like.py").write_text(
+            "from app import INEXISTENTE  # import colgante DENTRO del archivo\n",
+            encoding="utf-8",
+        )
+        idx = _build_index_for(arnes_plugin, tmp_path)
+        files = set(idx["files"].keys())
+        assert "app.py" in files
+        assert not any(f.startswith("bk/") for f in files), files
+
     def test_all_reexport_no_es_dangling(self, arnes_plugin, tmp_path):
         """`from app import X` donde app define X y lo lista en __all__:
         ningún dangling (el __all__ es una vinculación más)."""
