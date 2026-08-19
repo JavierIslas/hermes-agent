@@ -423,6 +423,68 @@ class TestRegistro:
             _presenter_off(arnes_plugin)
         assert "transform_llm_output" in registered
 
+    def test_mode_bool_true_transforma(self, arnes_plugin, tmp_path, monkeypatch):
+        """Bug del dogfood (2026-08-18): el usuario escribio `presenter_mode: true`
+        (bool, YAML natural) y el routing lo ignoraba — solo aceptaba strings.
+        Un bool truthy ES intencion de prender el presenter."""
+        _reset_gate(arnes_plugin)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        gate = arnes_plugin.gate_state.get()
+        gate["presenter_tool_calls"] = 2
+        arnes_plugin._PRESENTER_CTX = SimpleNamespace(
+            get_config=lambda key, default=None: True if key == "presenter_mode" else default,
+            llm=_StubLlm(reply="vestido ok"),
+        )
+        monkeypatch.setattr(arnes_plugin, "_worker_mode_active", lambda: True)
+        try:
+            result = arnes_plugin._on_transform_llm_output(
+                response_text="raw", session_id="s", model="m",
+                platform="telegram")
+        finally:
+            arnes_plugin._PRESENTER_CTX = None
+        assert result == "vestido ok"
+
+    def test_mode_bool_false_no_transforma(self, arnes_plugin, tmp_path, monkeypatch):
+        """Bool False es intencion de apagar: None, sin excepcion."""
+        _reset_gate(arnes_plugin)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        gate = arnes_plugin.gate_state.get()
+        gate["presenter_tool_calls"] = 2
+        arnes_plugin._PRESENTER_CTX = SimpleNamespace(
+            get_config=lambda key, default=None: False if key == "presenter_mode" else default,
+            llm=_StubLlm(),
+        )
+        monkeypatch.setattr(arnes_plugin, "_worker_mode_active", lambda: True)
+        try:
+            result = arnes_plugin._on_transform_llm_output(
+                response_text="raw", session_id="s", model="m",
+                platform="telegram")
+        finally:
+            arnes_plugin._PRESENTER_CTX = None
+        assert result is None
+
+    def test_mode_string_true_transforma(self, arnes_plugin, tmp_path, monkeypatch):
+        """'true'/'on' como string tambien prenden (tolerante a ambas formas)."""
+        _reset_gate(arnes_plugin)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        gate = arnes_plugin.gate_state.get()
+        gate["presenter_tool_calls"] = 2
+        arnes_plugin._PRESENTER_CTX = SimpleNamespace(
+            get_config=lambda key, default=None: "true" if key == "presenter_mode" else default,
+            llm=_StubLlm(reply="vestido ok"),
+        )
+        monkeypatch.setattr(arnes_plugin, "_worker_mode_active", lambda: True)
+        try:
+            result = arnes_plugin._on_transform_llm_output(
+                response_text="raw", session_id="s", model="m",
+                platform="telegram")
+        finally:
+            arnes_plugin._PRESENTER_CTX = None
+        assert result == "vestido ok"
+
     def test_state_tiene_keys_presenter(self, arnes_plugin):
         _reset_gate(arnes_plugin)
         s = arnes_plugin.gate_state.get()

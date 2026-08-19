@@ -238,14 +238,24 @@ def _handle_run_typecheck(args: Dict[str, Any], **_kw: Any) -> str:
 
 
 def _presenter_mode() -> str:
-    """Lee presenter_mode de la config del plugin (default "off")."""
+    """Lee presenter_mode de la config del plugin, normalizado a on/off.
+
+    Acepta las formas naturales de YAML (dogfood 2026-08-18): bool
+    ``true``/``false``, y strings ``on``/``off``/``true``/``false``
+    (case-insensitive). Cualquier otro valor o ausencia = off (inerte).
+    Nunca trona: config ilegible → off.
+    """
     if _PRESENTER_CTX is None:
         return "off"
     try:
         mode = _PRESENTER_CTX.get_config("presenter_mode", "off")
     except Exception:
         return "off"
-    return mode if isinstance(mode, str) and mode.strip() else "off"
+    if isinstance(mode, bool):
+        return "on" if mode else "off"
+    if isinstance(mode, str):
+        return "on" if mode.strip().lower() in ("on", "true", "1") else "off"
+    return "off"
 
 
 def _worker_mode_active() -> bool:
@@ -898,6 +908,6 @@ def register(ctx) -> None:
 
     logger.info(
         "arnes-gates: plugin registrado "
-        "(4 hooks + analyze_scope + find_references + search_semantic + "
+        "(6 hooks + analyze_scope + find_references + search_semantic + "
         "run_tests + run_lint + run_typecheck)"
     )
