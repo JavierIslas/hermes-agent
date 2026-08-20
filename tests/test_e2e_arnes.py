@@ -77,14 +77,32 @@ def _mk_proyecto(tmp_path: Path) -> Path:
 # ----------------------------------------------------------------------------
 
 class _StubLlm:
-    """Stub de PluginLlm: cuenta llamadas, devuelve texto vestido fijado."""
+    """Stub de PluginLlm: cuenta llamadas, devuelve texto vestido fijado.
 
-    def __init__(self, reply: str = "vestido"):
+    F5.2: si la reply fijada no contiene los tokens factuales del prompt
+    (paths/URLs/numeros del texto crudo a vestir), el gate de integridad
+    fail-openea — el stub debe simular un vestidor HONESTO. `echo=True`
+    hace que la reply conserve esos tokens automaticamente (prefijo de
+    persona + contenido factual intacto).
+    """
+
+    def __init__(self, reply: str = "vestido", echo: bool = False):
         self.reply = reply
+        self.echo = echo
         self.calls: List[Dict[str, Any]] = []
 
     def complete(self, messages, **kw):
         self.calls.append({"messages": messages, "kw": kw})
+        if self.echo:
+            import re as _re
+            raw = ""
+            for m in reversed(messages):
+                content = m.get("content", "") if isinstance(m, dict) else ""
+                marker = content.rfind("# Texto a vestir")
+                if marker >= 0:
+                    raw = content[marker + len("# Texto a vestir"):].strip()
+                    break
+            return SimpleNamespace(text=f"{self.reply} {raw}".strip())
         return SimpleNamespace(text=self.reply)
 
 
@@ -233,7 +251,8 @@ class TestEscenarioFeliz:
             "# Identity\nSoy la voz del escenario.", encoding="utf-8")
 
         transcript: List[Dict[str, str]] = []
-        llm = _presentar(arnes_plugin, "VESTIDO")
+        llm = _StubLlm(reply="VESTIDO:", echo=True)
+        arnes_plugin._PRESENTER_CTX = _ctx_stub("on", llm)
         monkeypatch.setattr(arnes_plugin, "_worker_mode_active", lambda: True)
         try:
             for i in range(3):
@@ -246,8 +265,9 @@ class TestEscenarioFeliz:
                     platform="telegram")
                 # El core persiste el RAW antes del hook (estructura F5):
                 transcript.append({"role": "assistant", "content": raw})
-                # La entrega al usuario SI se vistio (turno con tools + on)
-                assert entrega == "VESTIDO"
+                # La entrega al usuario SI se vistio (turno con tools + on).
+                # El stub echo viste con prefijo y conserva lo factual:
+                assert entrega == f"VESTIDO: {raw}"
         finally:
             arnes_plugin._PRESENTER_CTX = None
 

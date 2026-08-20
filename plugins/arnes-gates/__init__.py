@@ -307,7 +307,10 @@ def _on_transform_llm_output(
     if _PRESENTER_CTX is None:
         return None
     try:
-        p = presenter_mod.Presenter(_PRESENTER_CTX.llm)
+        p = presenter_mod.Presenter(
+            _PRESENTER_CTX.llm,
+            get_config=_PRESENTER_CTX.get_config,
+        )
     except Exception as exc:
         logger.debug("presenter: ctx.llm no disponible, sin vestir (%s)", exc)
         return None
@@ -449,7 +452,10 @@ def _check_pre_tool_call(
             and _PRESENTER_CTX is not None
         ):
             try:
-                pres = presenter_mod.Presenter(_PRESENTER_CTX.llm)
+                pres = presenter_mod.Presenter(
+                    _PRESENTER_CTX.llm,
+                    get_config=_PRESENTER_CTX.get_config,
+                )
                 dressed = pres.dress_question(question)
             except Exception as exc:
                 logger.debug("presenter: fail-open en clarify (%s)", exc)

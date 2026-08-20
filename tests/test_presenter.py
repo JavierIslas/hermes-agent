@@ -169,6 +169,123 @@ class TestPresenter:
 
 
 # ----------------------------------------------------------------------------
+# Integridad factual del vestido: paths/URLs/numeros del RAW deben sobrevivir
+# ----------------------------------------------------------------------------
+
+class TestFactualIntegrity:
+    def test_present_pierde_path_fail_open(self, arnes_plugin, tmp_path, monkeypatch):
+        """El vestidor tira un path del RAW: fail-open al crudo.
+
+        El arnes no confia en modelos; el vestidor ES un modelo. El gate
+        extrae tokens factuales (paths, URLs, numeros) del crudo y exige
+        presencia en el vestido.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="Todo listo, mi amor: los archivos quedaron.")
+        p = arnes_plugin.presenter.Presenter(llm)
+        raw = "Fix aplicado en /opt/data/hermes-agent/plugins/arnes-gates/presenter.py"
+        assert p.present(raw) == raw
+
+    def test_present_conserva_tokens_viste(self, arnes_plugin, tmp_path, monkeypatch):
+        """Vestido que conserva paths y numeros: pasa el gate y se entrega."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="Listo, criatura: 3 tests verdes en tests/test_x.py")
+        p = arnes_plugin.presenter.Presenter(llm)
+        raw = "3 tests passed. Ver tests/test_x.py"
+        assert p.present(raw) != raw  # vestido aceptado
+
+    def test_present_pierde_numero_fail_open(self, arnes_plugin, tmp_path, monkeypatch):
+        """Un numero critico (count de tests) desaparece: crudo."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="Todos los tests pasaron, mi rey.")
+        p = arnes_plugin.presenter.Presenter(llm)
+        raw = "227 tests passed in 5.2s"
+        assert p.present(raw) == raw
+
+    def test_present_url_sobrevive(self, arnes_plugin, tmp_path, monkeypatch):
+        """URL presente en vestido: aceptado."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="El grimorio vive en https://hermes.example/docs - leelo.")
+        p = arnes_plugin.presenter.Presenter(llm)
+        raw = "Docs: https://hermes.example/docs"
+        assert p.present(raw) == "El grimorio vive en https://hermes.example/docs - leelo."
+
+    def test_present_url_perdida_fail_open(self, arnes_plugin, tmp_path, monkeypatch):
+        """URL del crudo ausente en vestido: crudo."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="El grimorio vive en mi memoria, leelo ahi.")
+        p = arnes_plugin.presenter.Presenter(llm)
+        raw = "Docs: https://hermes.example/docs"
+        assert p.present(raw) == raw
+
+    def test_dress_question_pierde_branch_fail_open(self, arnes_plugin, tmp_path, monkeypatch):
+        """Clarify vestido sin el branch name: pregunta canonica."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="Que camino tomamos, criatura?")
+        p = arnes_plugin.presenter.Presenter(llm)
+        raw = "Merge a develop o a main?"
+        assert "develop" in raw
+        # "develop" y "main" no son tokens factuales (no path/url/numero):
+        # el gate de pregunta NO debe tronar por palabras — solo pasan las
+        # reglas del prompt. Este test documenta el alcance del gate.
+        out = p.dress_question(raw)
+        assert isinstance(out, str) and out
+
+
+# ----------------------------------------------------------------------------
+# Settings parametrizables: presenter_timeout_s + presenter_model
+# ----------------------------------------------------------------------------
+
+class TestSettings:
+    def _mk(self, arnes_plugin, tmp_path, monkeypatch, settings, reply="vestido ok"):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply=reply)
+        p = arnes_plugin.presenter.Presenter(
+            llm, get_config=lambda key, default=None: settings.get(key, default))
+        return p, llm
+
+    def test_timeout_parametrizado(self, arnes_plugin, tmp_path, monkeypatch):
+        """presenter_timeout_s en settings: se pasa al complete()."""
+        p, llm = self._mk(arnes_plugin, tmp_path, monkeypatch,
+                          {"presenter_timeout_s": 5})
+        p.present("raw")
+        assert llm.calls[0]["kw"]["timeout"] == 5.0
+
+    def test_timeout_default_60(self, arnes_plugin, tmp_path, monkeypatch):
+        """Sin setting: 60.0 (D13)."""
+        p, llm = self._mk(arnes_plugin, tmp_path, monkeypatch, {})
+        p.present("raw")
+        assert llm.calls[0]["kw"]["timeout"] == 60.0
+
+    def test_timeout_basura_cae_a_default(self, arnes_plugin, tmp_path, monkeypatch):
+        """Valor no numerico: default honesto, sin excepcion."""
+        p, llm = self._mk(arnes_plugin, tmp_path, monkeypatch,
+                          {"presenter_timeout_s": "lento"})
+        p.present("raw")
+        assert llm.calls[0]["kw"]["timeout"] == 60.0
+
+    def test_model_parametrizado(self, arnes_plugin, tmp_path, monkeypatch):
+        """presenter_model en settings: viaja como model= al complete()."""
+        p, llm = self._mk(arnes_plugin, tmp_path, monkeypatch,
+                          {"presenter_model": "zai/glm-4.5-flash"})
+        p.present("raw")
+        assert llm.calls[0]["kw"]["model"] == "zai/glm-4.5-flash"
+
+    def test_model_default_no_se_pasa(self, arnes_plugin, tmp_path, monkeypatch):
+        """Sin setting: NO se pasa model= → la fachada usa el modelo host."""
+        p, llm = self._mk(arnes_plugin, tmp_path, monkeypatch, {})
+        p.present("raw")
+        assert "model" not in llm.calls[0]["kw"]
+
+
+# ----------------------------------------------------------------------------
 # Routing: _on_transform_llm_output, las cinco condiciones
 # ----------------------------------------------------------------------------
 

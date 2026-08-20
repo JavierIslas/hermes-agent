@@ -11,21 +11,38 @@ Fase 5 del arnes. Diseno verificado 2026-08-18 contra el core post-merge:
 - Fail-open TOTAL: cualquier fallo (sin SOUL, LLM caido, output vacio,
   respuesta vacia) devuelve el texto original. El teatro jamas rompe un
   turno de ingenieria.
+
+F5.2 (2026-08-19), tres mejoras del dogfooding:
+
+- GATE DE INTEGRIDAD FACTUAL: el arnes no confia en modelos y el vestidor
+  ES un modelo. Tras vestir, se extraen los tokens factuales del crudo
+  (paths, URLs, numeros) y se exige su presencia en el vestido; si falta
+  alguno, fail-open al crudo — un vestido que miente es peor que crudo.
+- SETTINGS PARAMETRIZABLES via ``get_config`` (la del PluginContext):
+  * ``presenter_timeout_s`` (default 60, D13): timeout de la llamada.
+  * ``presenter_model`` (default None = modelo host): ref "provider/model"
+    para vestir con un modelo mas barato. Requiere que el host habilite
+    ``allow_model_override`` en el settings llm del plugin (fail-closed
+    del core); sin eso, la fachada ignora el override.
 """
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Timeout (segundos) para la llamada de vestir. Dogfood 2026-08-19: con
+# Timeout (segundos) para la llamada de vestir. Dogfood 2026-08-19 (D13): con
 # glm-5.3, 20s alcanzaba solo para outputs cortos (~80 chars vistieron en
 # ~8s); los turnos reales de coding (~2K chars) timeoutaban y fail-openeaban
 # al crudo (2 de 3 disparos). Orden del usuario: 1 minuto ("puedo esperar").
-# Al vencer, fail-open al texto original.
-_DRESS_TIMEOUT_S = 60.0
+# Override via settings: presenter_timeout_s. Al vencer, fail-open al crudo.
+_DEFAULT_DRESS_TIMEOUT_S = 60.0
+
+_RE_URL = re.compile(r"https?://\S+")
+_RE_NUM = re.compile(r"\d+(?:\.\d+)?")
 
 
 def _load_soul() -> Optional[str]:
@@ -55,15 +72,77 @@ def _load_soul() -> Optional[str]:
     return None
 
 
-def _ensure_trailing_newline(text: str) -> str:
-    return text if text.endswith("\n") else text + "\n"
+# =============================================================================
+# F5.2: gate de integridad factual del vestido.
+# =============================================================================
+
+def _factual_tokens(text: str) -> set[str]:
+    """Tokens factuales del texto: URLs, paths y numeros.
+
+    Son el contenido que el prompt de vestir exige mantener INTACTO. La
+    verificacion es por substring (el vestido puede puntuar distinto);
+    conservador de la direccion correcta: un token ausente = el vestido
+    esta mintiendo sobre el trabajo → crudo.
+    """
+    tokens: set[str] = set()
+    for url in _RE_URL.findall(text):
+        url = url.rstrip(".,;:!?)]}\"'")
+        if url:
+            tokens.add(url)
+    for tok in text.split():
+        tok = tok.strip(".,;:!?()[]{}\"'`<>*")
+        if tok and "/" in tok and not tok.startswith("http"):
+            tokens.add(tok)
+    for num in _RE_NUM.findall(text):
+        tokens.add(num)
+    return tokens
+
+
+def _factual_integrity_ok(raw: str, dressed: str) -> bool:
+    """True si todo token factual del crudo sobrevive en el vestido."""
+    for tok in _factual_tokens(raw):
+        if tok not in dressed:
+            logger.warning(
+                "presenter: fail-open por integridad factual (token perdido: %r)",
+                tok,
+            )
+            return False
+    return True
+
+
+def _coerce_timeout(value: Any) -> float:
+    """Timeout honesto: numero positivo o default. Nunca trona."""
+    try:
+        t = float(value)
+        return t if t > 0 else _DEFAULT_DRESS_TIMEOUT_S
+    except (TypeError, ValueError):
+        return _DEFAULT_DRESS_TIMEOUT_S
 
 
 class Presenter:
     """Viste output/preguntas del worker con la persona de SOUL."""
 
-    def __init__(self, llm: Any):
+    def __init__(self, llm: Any, get_config: Optional[Callable[..., Any]] = None):
         self._llm = llm
+        self._get_config = get_config or (lambda key, default=None: default)
+
+    # -- settings (F5.2) -----------------------------------------------------
+
+    def _timeout_s(self) -> float:
+        return _coerce_timeout(
+            self._get_config("presenter_timeout_s", _DEFAULT_DRESS_TIMEOUT_S)
+        )
+
+    def _model_kw(self) -> dict[str, str]:
+        """presenter_model como kwarg para complete(); vacio = modelo host.
+
+        Solo strings con contenido ("provider/model"); un bool True de YAML
+        natural NO es una ref de modelo y se ignora (default = host).
+        """
+        m = self._get_config("presenter_model", None)
+        if isinstance(m, str) and m.strip():
+            return {"model": m.strip()}
+        return {}
 
     # -- API publica --------------------------------------------------------
 
@@ -75,19 +154,25 @@ class Presenter:
         if not soul:
             return worker_output
         try:
+            kw: dict[str, Any] = {
+                "timeout": self._timeout_s(),
+                "purpose": "arnes-gates presenter: vestir output",
+            }
+            kw.update(self._model_kw())
             result = self._llm.complete(
                 messages=[
                     {"role": "system", "content": soul},
                     {"role": "user", "content": _DRESS_OUTPUT_PROMPT.format(
                         worker_output=worker_output)},
                 ],
-                timeout=_DRESS_TIMEOUT_S,
-                purpose="arnes-gates presenter: vestir output",
+                **kw,
             )
             dressed = getattr(result, "text", None)
             if not dressed or not dressed.strip():
                 return worker_output
             if dressed.strip() == worker_output.strip():
+                return worker_output
+            if not _factual_integrity_ok(worker_output, dressed):
                 return worker_output
             return dressed
         except Exception as exc:
@@ -102,17 +187,23 @@ class Presenter:
         if not soul:
             return question
         try:
+            kw: dict[str, Any] = {
+                "timeout": self._timeout_s(),
+                "purpose": "arnes-gates presenter: vestir pregunta",
+            }
+            kw.update(self._model_kw())
             result = self._llm.complete(
                 messages=[
                     {"role": "system", "content": soul},
                     {"role": "user", "content": _DRESS_QUESTION_PROMPT.format(
                         question=question)},
                 ],
-                timeout=_DRESS_TIMEOUT_S,
-                purpose="arnes-gates presenter: vestir pregunta",
+                **kw,
             )
             dressed = getattr(result, "text", None)
             if not dressed or not dressed.strip():
+                return question
+            if not _factual_integrity_ok(question, dressed):
                 return question
             return dressed
         except Exception as exc:
@@ -151,4 +242,4 @@ REGLAS:
 """
 
 
-__all__ = ["Presenter", "_load_soul"]
+__all__ = ["Presenter", "_load_soul", "_factual_tokens", "_factual_integrity_ok"]
