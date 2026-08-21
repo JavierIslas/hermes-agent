@@ -242,6 +242,33 @@ class TestFactualIntegrity:
 # Settings parametrizables: presenter_timeout_s + presenter_model
 # ----------------------------------------------------------------------------
 
+    def test_diffstat_no_es_path(self, arnes_plugin):
+        """F5.5 (dogfood 2026-08-21): '+462/-15' y '272/272' son diffstats y
+        ratios, no paths. El extractor viejo los exigia como substring
+        exacta y el vestidor (mismo modelo u otro) casi siempre los
+        reformateaba -> failopen:integrity perpetuo -> entrega siempre
+        cruda sin que nadie supiera por que."""
+        ft = arnes_plugin.presenter._factual_tokens
+        toks = ft("Commiteado: 27b28627d0 - 5 archivos, +462/-15.")
+        assert "+462/-15" not in toks
+        assert "272/272" not in ft("suite 272/272 verde")
+        # los paths siguen siendo tokens
+        assert "/opt/data/hermes-agent/presenter.py" in ft(
+            "cambie /opt/data/hermes-agent/presenter.py y /workspace/x.py")
+
+    def test_vestidor_puede_reformatear_difstat(self, arnes_plugin, tmp_path, monkeypatch):
+        """Integracion: un vestido que reformatea el diffstat como
+        '+462 líneas / -15' ya no se rechaza (el hecho sobrevive en
+        partes). El gate sigue exigiendo los NUMEROS."""
+        from types import SimpleNamespace
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "SOUL.md").write_text(
+            "# Identity\nSoy la voz del escenario.", encoding="utf-8")
+        llm = _StubLlm(reply="El ritual quedo sellado en 27b28627d0: 5 archivos, sumo +462 lineas y borro 15, criatura.")
+        p = arnes_plugin.presenter.Presenter(llm)
+        out = p.present("Commiteado 27b28627d0: 5 archivos, +462/-15.")
+        assert out == "El ritual quedo sellado en 27b28627d0: 5 archivos, sumo +462 lineas y borro 15, criatura."
+
 class TestSettings:
     def _mk(self, arnes_plugin, tmp_path, monkeypatch, settings, reply="vestido ok"):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

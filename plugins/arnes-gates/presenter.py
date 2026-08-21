@@ -43,6 +43,13 @@ _DEFAULT_DRESS_TIMEOUT_S = 60.0
 
 _RE_URL = re.compile(r"https?://\S+")
 _RE_NUM = re.compile(r"\d+(?:\.\d+)?")
+# F5.5 (dogfood 2026-08-21): diffstats (+462/-15) y ratios (272/272) NO son
+# paths. El extractor viejo exigia su presencia como substring exacta y el
+# vestidor casi siempre los reformateaba ("+462 líneas / -15") →
+# failopen:integrity perpetuo → entrega siempre cruda. Estos patrones se
+# tratan como HECHOS NUMÉRICOS: sus números deben sobrevivir, su formato no.
+_RE_DIFFSTAT = re.compile(r"[+-]\d+(?:\.\d+)?(?:/[+-]\d+(?:\.\d+)?)?")
+_RE_RATIO = re.compile(r"(?<![\w./])\d+(?:\.\d+)?/\d+(?:\.\d+)?(?![\w./])")
 
 
 def _load_soul() -> Optional[str]:
@@ -77,12 +84,13 @@ def _load_soul() -> Optional[str]:
 # =============================================================================
 
 def _factual_tokens(text: str) -> set[str]:
-    """Tokens factuales del texto: URLs, paths y numeros.
+    """Tokens factuales del texto: URLs, paths, numeros.
 
-    Son el contenido que el prompt de vestir exige mantener INTACTO. La
-    verificacion es por substring (el vestido puede puntuar distinto);
-    conservador de la direccion correcta: un token ausente = el vestido
-    esta mintiendo sobre el trabajo → crudo.
+    URLs y paths se exigen como substring exacta. Los diffstats
+    (+462/-15) y ratios (272/272) NO se exigen como substring: sus
+    NUMEROS ya entran via _RE_NUM y sobreviven aunque el vestidor los
+    reformatee ("+462 líneas / -15"). El resto de tokens con '/' son
+    paths y se exigen exactos.
     """
     tokens: set[str] = set()
     for url in _RE_URL.findall(text):
@@ -91,8 +99,11 @@ def _factual_tokens(text: str) -> set[str]:
             tokens.add(url)
     for tok in text.split():
         tok = tok.strip(".,;:!?()[]{}\"'`<>*")
-        if tok and "/" in tok and not tok.startswith("http"):
-            tokens.add(tok)
+        if not tok or "/" not in tok or tok.startswith("http"):
+            continue
+        if _RE_DIFFSTAT.fullmatch(tok) or _RE_RATIO.fullmatch(tok):
+            continue  # diffstat/ratio: sus numeros ya estan via _RE_NUM
+        tokens.add(tok)
     for num in _RE_NUM.findall(text):
         tokens.add(num)
     return tokens
@@ -249,6 +260,9 @@ class Presenter:
                 self._emit("failopen:empty")
                 return worker_output
             if dressed.strip() == worker_output.strip():
+                logger.info(
+                    "presenter: vestidor devolvio el texto sin cambios "
+                    "(idempotente) — entrega cruda")
                 return worker_output
             if not _factual_integrity_ok(worker_output, dressed):
                 self._emit("failopen:integrity")
