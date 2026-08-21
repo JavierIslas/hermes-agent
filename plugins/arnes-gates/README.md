@@ -57,33 +57,57 @@ y escribir `$HERMES_HOME/WORKER.md` con el prompt del worker.
 ## Presenter: activarlo
 
 El presenter esta INERTE por defecto (`presenter_mode: off` — decision de
-diseno 2026-08-18). Para despertarlo:
+diseno 2026-08-18). Modos (F5.3):
 
 ```yaml
 plugins:
   entries:
     arnes-gates:
       settings:
-        presenter_mode: on
+        presenter_mode: on_finish   # on | on_finish | off
+        presenter_model: zai/glm-4.5-flash  # opcional: modelo barato para vestir
+        presenter_timeout_s: 60     # opcional (default 60, D13)
+      llm:                          # gate del core (fail-closed) para el override
+        allow_provider_override: true
+        allow_model_override: true
 ```
+
+- `on`: viste cada turno con tools (comportamiento historico; bool `true`
+  equivale a esto).
+- `on_finish` (Rift 5, recomendado): viste SOLO el turno que CIERRA la
+  tarea — finish gate que deja cerrar con changed_paths, o commit ejecutado
+  con exito. La latencia de vestir se paga una vez por tarea, no por turno.
+- `off`: el presenter duerme.
+
+`presenter_model` viaja SEPARADO a la fachada (`provider=` + `model=`,
+contrato real de `PluginLlm.complete`); requiere los `llm.allow_*_override`
+del entry o el core lo rechaza (fail-closed). Sin setting, viste el modelo
+host.
 
 Condiciones para que vista una entrega (TODAS):
 
-1. `presenter_mode: on`
+1. `presenter_mode` != off
 2. `agent.worker_mode: true` (si el modelo ya habla con la persona en su
    system prompt, vestir seria doble)
 3. La platform no es `subagent` (los hijos de delegate_task no se visten)
 4. El turno uso tools (charla pura no se viste)
-5. Existe `$HERMES_HOME/SOUL.md` (o `SOUL_WORKER.md`, override del tono
+5. Si el modo es `on_finish`: el turno cerro limpio (latch por turno)
+6. Existe `$HERMES_HOME/SOUL.md` (o `SOUL_WORKER.md`, override del tono
    del presenter) y el output no esta vacio
 
-El vestidor usa `ctx.llm` (PluginLlm): el modelo host del usuario, sin
-API key propia. Fail-open total: sin SOUL, LLM caido, output vacio o
-respuesta vacia → la entrega viaja cruda. **El teatro jamas rompe un
-turno de ingenieria.**
+El vestidor usa `ctx.llm` (PluginLlm): modelo host o `presenter_model`.
+Fail-open total: sin SOUL, LLM caido, timeout, output vacio, respuesta
+vacía o integridad factual rota → la entrega viaja cruda. **El teatro
+jamas rompe un turno de ingenieria.** Cada fail-open queda contado en el
+estado (`presenter_failopen_{integrity,llm,timeout,empty}`) y
+`on_session_end` loguea el resumen: un presenter que siempre fail-openea
+es teatro muerto — hay que poder verlo.
 
 Clarify: las preguntas del agente se visten via directiva `modify` antes
-del dispatch; las choices y la respuesta del usuario viajan canonicas.
+del dispatch (en cualquier modo != off); las choices y la respuesta del
+usuario viajan canonicas. El worker, por su parte, lleva una directiva
+Rift 3 en WORKER.md: los mensajes libres del usuario pueden traer tono o
+referencias a la persona — extraer el intento tecnico, ignorar el resto.
 
 ## Troubleshooting
 
@@ -125,9 +149,11 @@ scripts/run_tests.sh tests/test_arnes_gates.py tests/test_presenter.py \
   tests/test_e2e_arnes.py   # y el resto de la suite del plugin (16 archivos)
 ```
 
-Suite del plugin: 227 tests (221 + 6 E2E). E2E (`tests/test_e2e_arnes.py`)
-conduce las superficies reales en el orden del core y verifica la metrica
-sagrada: el transcript queda RAW tras multiples turnos con presenter activo.
+Suite del plugin: 246 tests (223 + 23 nuevos de F5.3: on_finish, telemetría
+de fail-open, contrato model separado, directiva Rift 3). E2E
+(`tests/test_e2e_arnes.py`) conduce las superficies reales en el orden del
+core y verifica la metrica sagrada: el transcript queda RAW tras multiples
+turnos con presenter activo.
 
 ## Estado
 

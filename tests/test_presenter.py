@@ -272,11 +272,14 @@ class TestSettings:
         assert llm.calls[0]["kw"]["timeout"] == 60.0
 
     def test_model_parametrizado(self, arnes_plugin, tmp_path, monkeypatch):
-        """presenter_model en settings: viaja como model= al complete()."""
+        """presenter_model "provider/model" viaja SEPARADO: provider= y model=
+        (contrato real de PluginLlm.complete, F5.3 — antes la ref entera
+        viajaba como model y el core la rechazaba)."""
         p, llm = self._mk(arnes_plugin, tmp_path, monkeypatch,
                           {"presenter_model": "zai/glm-4.5-flash"})
         p.present("raw")
-        assert llm.calls[0]["kw"]["model"] == "zai/glm-4.5-flash"
+        assert llm.calls[0]["kw"]["provider"] == "zai"
+        assert llm.calls[0]["kw"]["model"] == "glm-4.5-flash"
 
     def test_model_default_no_se_pasa(self, arnes_plugin, tmp_path, monkeypatch):
         """Sin setting: NO se pasa model= → la fachada usa el modelo host."""

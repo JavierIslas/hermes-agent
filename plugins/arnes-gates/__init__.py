@@ -238,12 +238,16 @@ def _handle_run_typecheck(args: Dict[str, Any], **_kw: Any) -> str:
 
 
 def _presenter_mode() -> str:
-    """Lee presenter_mode de la config del plugin, normalizado a on/off.
+    """Lee presenter_mode de la config del plugin, normalizado a
+    on | on_finish | off.
 
     Acepta las formas naturales de YAML (dogfood 2026-08-18): bool
-    ``true``/``false``, y strings ``on``/``off``/``true``/``false``
-    (case-insensitive). Cualquier otro valor o ausencia = off (inerte).
-    Nunca trona: config ilegible → off.
+    ``true``/``false`` (true = on: vestir cada turno con tools), y strings
+    ``on``/``on_finish``/``off``/``true``/``false`` (case-insensitive).
+    F5.3 (2026-08-21): ``on_finish`` viste SOLO el turno que cierra la tarea
+    (Rift 5): la latencia de vestir se paga una vez por tarea, no por turno.
+    Cualquier otro valor o ausencia = off (inerte). Nunca trona: config
+    ilegible → off.
     """
     if _PRESENTER_CTX is None:
         return "off"
@@ -254,7 +258,10 @@ def _presenter_mode() -> str:
     if isinstance(mode, bool):
         return "on" if mode else "off"
     if isinstance(mode, str):
-        return "on" if mode.strip().lower() in ("on", "true", "1") else "off"
+        m = mode.strip().lower()
+        if m == "on_finish":
+            return "on_finish"
+        return "on" if m in ("on", "true", "1") else "off"
     return "off"
 
 
@@ -285,6 +292,35 @@ def _presenter_enabled_for(platform: str) -> bool:
     return True
 
 
+# Mapeo evento → contador de fail-open (F5.3: telemetría del vestidor).
+_PRESENTER_FAILOPEN_COUNTERS = {
+    "failopen:integrity": "presenter_failopen_integrity",
+    "failopen:llm": "presenter_failopen_llm",
+    "failopen:timeout": "presenter_failopen_timeout",
+    "failopen:empty": "presenter_failopen_empty",
+}
+
+
+def _presenter_on_event(event: str) -> None:
+    """Telemetría del vestidor: cuenta dressed y fail-opens en gate_state.
+
+    Dogfood D13: 2/3 vestidos morían en timeout y solo quedaba un WARNING de
+    log invisible. Con contadores, on_session_end puede reportar la salud
+    real del presenter (un presenter que siempre fail-openea es teatro
+    muerto que solo agrega latencia — hay que poder verlo).
+    """
+    try:
+        gate = gate_state.get()
+        if event == "dressed":
+            gate["presenter_dressed_count"] = gate.get("presenter_dressed_count", 0) + 1
+            return
+        key = _PRESENTER_FAILOPEN_COUNTERS.get(event)
+        if key:
+            gate[key] = gate.get(key, 0) + 1
+    except Exception:  # pragma: no cover - telemetría jamás rompe
+        logger.debug("presenter: on_event falló (ignorado)", exc_info=True)
+
+
 def _on_transform_llm_output(
     response_text: str = "",
     session_id: str = "",
@@ -304,21 +340,24 @@ def _on_transform_llm_output(
         return None
     if gate.get("presenter_tool_calls", 0) <= 0:
         return None  # (d) charla pura: no se viste
+    if _presenter_mode() == "on_finish" and not gate.get("presenter_finish_clean"):
+        return None  # Rift 5: turno intermedio — solo se viste el cierre
     if _PRESENTER_CTX is None:
         return None
     try:
         p = presenter_mod.Presenter(
             _PRESENTER_CTX.llm,
             get_config=_PRESENTER_CTX.get_config,
+            on_event=_presenter_on_event,
         )
     except Exception as exc:
         logger.debug("presenter: ctx.llm no disponible, sin vestir (%s)", exc)
         return None
     dressed = p.present(response_text)
     # present() es fail-open (devuelve el original ante cualquier fallo):
-    # solo reportamos transformacion si realmente cambio algo.
+    # solo reportamos transformación si realmente cambió algo. El contador
+    # dressed/fail-open lo lleva on_event (telemetría F5.3).
     if dressed and dressed.strip() and dressed.strip() != response_text.strip():
-        gate["presenter_dressed_count"] = gate.get("presenter_dressed_count", 0) + 1
         logger.info(
             "arnes-gates: presenter vistio la entrega (turno con %d tools)",
             gate.get("presenter_tool_calls", 0),
@@ -347,6 +386,36 @@ def _on_session_start(**_kw: Any) -> None:
     embedding_service.reset()
     memory_scope.reset()
     logger.debug("arnes-gates: sesion iniciada — indice se construira bajo demanda")
+
+
+def _on_session_end(**_kw: Any) -> None:
+    """Resumen de salud del presenter al cerrar la sesión (F5.3).
+
+    Telemetría de fail-open: dogfood D13 mostró un presenter que fallaba en
+    2/3 de los vestidos (timeout) sin señal observable. Si los fail-opens
+    dominan, el vestidor es teatro muerto que solo agrega latencia: bajar el
+    output por sesión da el dato para decidir (presenter_model barato, más
+    timeout, o apagar).
+    """
+    try:
+        gate = gate_state.get()
+        dressed = gate.get("presenter_dressed_count", 0)
+        total_fail = sum(
+            gate.get(k, 0)
+            for k in _PRESENTER_FAILOPEN_COUNTERS.values()
+        )
+        if dressed or total_fail:
+            detail = ", ".join(
+                f"{k.split('_', 2)[2]}={gate.get(k, 0)}"
+                for k in _PRESENTER_FAILOPEN_COUNTERS.values()
+                if gate.get(k, 0)
+            )
+            logger.info(
+                "arnes-gates: presenter sesion cerrada — vestidas=%d fail-opens=%d%s",
+                dressed, total_fail, f" ({detail})" if detail else "",
+            )
+    except Exception:  # pragma: no cover - telemetría jamás rompe
+        logger.debug("arnes-gates: resumen de presenter falló", exc_info=True)
 
 
 def _on_pre_tool_call(
@@ -744,6 +813,10 @@ def _on_pre_verify(
         logger.warning("arnes-gates: typecheck evidence fail_open — %s", typecheck_ev.reason)
 
     gate["done"] = True
+    # F5.3: cierre limpio de tarea — señal para presenter_mode: on_finish.
+    # El finish gate dejó cerrar con changed_paths y evidencia verde (o sin
+    # ritual exigible): este turno ES el cierre que conviene vestir.
+    gate["presenter_finish_clean"] = True
     return None  # todo verde: deja cerrar
 
 
@@ -779,6 +852,12 @@ def _on_post_tool_call(
         if not cmd:
             return
         gate = gate_state.get()
+        # F5.3: commit ejecutado con exito = cierre de tarea (el commit gate
+        # solo deja pasar commits post-finish o con evidencia fresca). Senal
+        # para presenter_mode: on_finish. Commits bloqueados (status=error)
+        # no cuentan: no cerraron nada.
+        if detect_git_commit(cmd) and _kw.get("status") != "error":
+            gate["presenter_finish_clean"] = True
         # Trackear cd: actualizar terminal_cwd si el comando contiene cd.
         new_cwd = parse_cd(cmd, gate.get("terminal_cwd"))
         if new_cwd:
@@ -817,6 +896,9 @@ def _on_pre_api_request(
         gate["breaker_turn_id"] = turn_id
         # Fase 5: turno nuevo = latch del presenter en cero (patron D7).
         gate["presenter_tool_calls"] = 0
+        # F5.3: el cierre limpio es una propiedad del TURNO, no acumulativa
+        # (done sí lo es — sesion—; por eso este latch aparte).
+        gate["presenter_finish_clean"] = False
         if gate.get("circuit_tripped") or gate.get("block_count"):
             gate["circuit_tripped"] = False
             gate["block_count"] = 0
@@ -841,6 +923,7 @@ def register(ctx) -> None:
 
     # Hooks.
     ctx.register_hook("on_session_start", _on_session_start)
+    ctx.register_hook("on_session_end", _on_session_end)
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("pre_verify", _on_pre_verify)

@@ -18,6 +18,13 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_HERMES_HOME_OVERRIDE", default=_UNSET
 )
 
+# Root del proyecto (donde vive este archivo). Consumidor conocido:
+# hermes_cli/process_identity.py::install_id. Antes este import era colgante
+# (el símbolo no existía) y el consumidor caía siempre al fallback
+# Path(__file__).resolve().parent.parent — el mismo valor que esta constante
+# define, ahora explícito y verificable por el índice del arnés.
+PROJECT_ROOT: Path = Path(__file__).resolve().parent
+
 # ── TUI busy-indicator styles ─────────────────────────────────────────
 # Single source of truth shared by the CLI /indicator command, the TUI
 # gateway config handler, and the /help command registry. Keep in sync

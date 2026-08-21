@@ -120,11 +120,28 @@ def _coerce_timeout(value: Any) -> float:
 
 
 class Presenter:
-    """Viste output/preguntas del worker con la persona de SOUL."""
+    """Viste output/preguntas del worker con la persona de SOUL.
 
-    def __init__(self, llm: Any, get_config: Optional[Callable[..., Any]] = None):
+    ``on_event`` (F5.3): callback opcional ``fn(event: str)`` que recibe
+    ``"dressed"`` o ``"failopen:integrity|llm|timeout|empty|nosoul"`` tras
+    cada intento de vestir. Telemetría: el dogfood D13 mostró fail-opens
+    invisibles (2/3 vestidos morían en timeout sin registro observable).
+    Nunca rompe el turno: un callback que truca se traga.
+    """
+
+    def __init__(self, llm: Any, get_config: Optional[Callable[..., Any]] = None,
+                 on_event: Optional[Callable[[str], None]] = None):
         self._llm = llm
         self._get_config = get_config or (lambda key, default=None: default)
+        self._on_event = on_event
+
+    def _emit(self, event: str) -> None:
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(event)
+        except Exception:  # pragma: no cover - telemetría jamás rompe
+            logger.debug("presenter: on_event falló (ignorado)", exc_info=True)
 
     # -- settings (F5.2) -----------------------------------------------------
 
@@ -134,15 +151,30 @@ class Presenter:
         )
 
     def _model_kw(self) -> dict[str, str]:
-        """presenter_model como kwarg para complete(); vacio = modelo host.
+        """presenter_model como kwargs provider= + model= SEPARADOS.
 
-        Solo strings con contenido ("provider/model"); un bool True de YAML
-        natural NO es una ref de modelo y se ignora (default = host).
+        F5.3 (2026-08-21) — fix de contrato: la firma real de
+        ``PluginLlm.complete()`` (/opt/hermes/agent/plugin_llm.py) es
+        ``provider=`` y ``model=`` independientes, gateada por
+        ``plugins.entries.<id>.llm.allow_model_override``. El código viejo
+        pasaba la ref entera "provider/model" como ``model`` →
+        PluginLlmTrustError → fail-open silencioso SIEMPRE.
+
+        Formatos aceptados: "provider/model" (primera barra divide; el resto
+        del string es el model, p.ej. "openrouter/qwen/qwen-2.5"), "model"
+        solo (sin barra; provider queda al host), o nada. Un bool True de
+        YAML natural NO es una ref de modelo y se ignora.
         """
         m = self._get_config("presenter_model", None)
-        if isinstance(m, str) and m.strip():
-            return {"model": m.strip()}
-        return {}
+        if not (isinstance(m, str) and m.strip()):
+            return {}
+        m = m.strip()
+        if "/" in m:
+            provider, _, model = m.partition("/")
+            if provider.strip() and model.strip():
+                return {"provider": provider.strip(), "model": model.strip()}
+            return {}
+        return {"model": m}
 
     # -- API publica --------------------------------------------------------
 
@@ -152,6 +184,7 @@ class Presenter:
             return worker_output
         soul = _load_soul()
         if not soul:
+            self._emit("failopen:nosoul")
             return worker_output
         try:
             kw: dict[str, Any] = {
@@ -169,13 +202,21 @@ class Presenter:
             )
             dressed = getattr(result, "text", None)
             if not dressed or not dressed.strip():
+                self._emit("failopen:empty")
                 return worker_output
             if dressed.strip() == worker_output.strip():
                 return worker_output
             if not _factual_integrity_ok(worker_output, dressed):
+                self._emit("failopen:integrity")
                 return worker_output
+            self._emit("dressed")
             return dressed
+        except TimeoutError as exc:
+            self._emit("failopen:timeout")
+            logger.warning("presenter: fail-open al vestir output por timeout (%s)", exc)
+            return worker_output
         except Exception as exc:
+            self._emit("failopen:llm")
             logger.warning("presenter: fail-open al vestir output (%s)", exc)
             return worker_output
 

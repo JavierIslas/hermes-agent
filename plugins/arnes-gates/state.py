@@ -32,6 +32,14 @@ def _new_state() -> dict[str, Any]:
         "presenter_tool_calls": 0,  # latch: tools ejecutadas en el turno (reset por turn_id nuevo, patron D7)
         "presenter_turn_id": None,  # turn_id del último pre_api_request visto por el latch
         "presenter_dressed_count": 0,  # telemetría: entregas vestidas en la sesión
+        # F5.3 (2026-08-21): on_finish — viste SOLO el turno que cierra la tarea
+        "presenter_finish_clean": False,  # latch: este turno cerró limpio (finish gate OK o commit)
+        # F5.3: telemetría de fail-open (dogfood D13: 2/3 vestidos morían en
+        # timeout sin que nadie lo supiera — el presenter era teatro muerto)
+        "presenter_failopen_integrity": 0,
+        "presenter_failopen_llm": 0,
+        "presenter_failopen_timeout": 0,
+        "presenter_failopen_empty": 0,
         # Modo arranque (repo sin codigo previo)
         "modo_arranque": False,
         "spec_done": False,
