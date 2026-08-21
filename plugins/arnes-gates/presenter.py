@@ -110,6 +110,45 @@ def _factual_integrity_ok(raw: str, dressed: str) -> bool:
     return True
 
 
+def _snapshot_allowed_text(snapshot: Optional[dict]) -> str:
+    """Texto plano con los HECHOS autorizados del snapshot.
+
+    Los tokens factuales de este texto quedan autorizados en el vestido
+    (paths escritos, conteos de tests). El snapshot lo arma el plugin con
+    datos del gate_state — nunca texto del modelo.
+    """
+    if not snapshot:
+        return ""
+    parts: list[str] = []
+    files = snapshot.get("files") or []
+    if files:
+        parts.append(" ".join(str(f) for f in files))
+    for key in ("tests", "lint", "typecheck"):
+        val = snapshot.get(key)
+        if val:
+            parts.append(str(val))
+    return " ".join(parts)
+
+
+def _no_invented_tokens(dressed: str, raw: str, snapshot: Optional[dict]) -> bool:
+    """True si el vestido no inventa tokens factuales.
+
+    Gate anti-invencion (F5.4): todo token factual del VESTIDO (paths,
+    URLs, numeros) debe existir en el RAW o en los hechos del snapshot.
+    Un vestidor que menciona archivos que nadie escribio o conteos que
+    nadie corrio esta mintiendo sobre el trabajo → fail-open al crudo.
+    """
+    allowed = raw + " " + _snapshot_allowed_text(snapshot)
+    for tok in _factual_tokens(dressed):
+        if tok not in allowed:
+            logger.warning(
+                "presenter: fail-open por invencion (token no autorizado: %r)",
+                tok,
+            )
+            return False
+    return True
+
+
 def _coerce_timeout(value: Any) -> float:
     """Timeout honesto: numero positivo o default. Nunca trona."""
     try:
@@ -178,8 +217,13 @@ class Presenter:
 
     # -- API publica --------------------------------------------------------
 
-    def present(self, worker_output: str) -> str:
-        """Viste el output final del worker. Fail-open total."""
+    def present(self, worker_output: str, ctx_snapshot: Optional[dict] = None) -> str:
+        """Viste el output final del worker. Fail-open total.
+
+        ``ctx_snapshot`` (F5.4): hechos estructurados del turno (files,
+        tests, lint, finish_clean) que el vestidor puede incorporar. Los
+        arma el plugin desde gate_state — nunca texto del modelo.
+        """
         if not worker_output or not worker_output.strip():
             return worker_output
         soul = _load_soul()
@@ -195,8 +239,8 @@ class Presenter:
             result = self._llm.complete(
                 messages=[
                     {"role": "system", "content": soul},
-                    {"role": "user", "content": _DRESS_OUTPUT_PROMPT.format(
-                        worker_output=worker_output)},
+                    {"role": "user", "content": _build_dress_output_prompt(
+                        worker_output, ctx_snapshot)},
                 ],
                 **kw,
             )
@@ -207,6 +251,9 @@ class Presenter:
             if dressed.strip() == worker_output.strip():
                 return worker_output
             if not _factual_integrity_ok(worker_output, dressed):
+                self._emit("failopen:integrity")
+                return worker_output
+            if not _no_invented_tokens(dressed, worker_output, ctx_snapshot):
                 self._emit("failopen:integrity")
                 return worker_output
             self._emit("dressed")
@@ -252,19 +299,50 @@ class Presenter:
             return question
 
 
+def _build_dress_output_prompt(worker_output: str, ctx_snapshot: Optional[dict] = None) -> str:
+    """Arma el prompt de vestir: contexto del turno (hechos) + texto.
+
+    El bloque '# Contexto del turno' va ANTES del '# Texto a vestir':
+    el stub echo del E2E extrae tras ese marcador final, y los vestidores
+    reales leen los hechos primero y la entrega despues.
+    """
+    snapshot_block = ""
+    if ctx_snapshot:
+        lines = []
+        files = ctx_snapshot.get("files") or []
+        if files:
+            lines.append("- Archivos del turno: " + ", ".join(str(f) for f in files))
+        for key, label in (("tests", "Tests"), ("lint", "Lint"),
+                           ("typecheck", "Typecheck")):
+            val = ctx_snapshot.get(key)
+            if val:
+                lines.append(f"- {label}: {val}")
+        if ctx_snapshot.get("finish_clean"):
+            lines.append("- Cierre de tarea verificado (finish gate)")
+        if lines:
+            snapshot_block = (
+                "# Contexto del turno (hechos verificados por el arnés; "
+                "podés mencionarlos, no inventar otros)\n" + "\n".join(lines) + "\n\n"
+            )
+    return _DRESS_OUTPUT_PROMPT.format(
+        worker_output=worker_output, snapshot_block=snapshot_block)
+
+
 _DRESS_OUTPUT_PROMPT = """\
 Vas a presentar al usuario el resultado de un turno de trabajo tecnico.
 El texto fue producido por un worker de ingenieria: seco, factual.
 
 REGLAS:
-- Mantene INTACTO todo el contenido factual: paths, numeros de linea,
-  comandos, resultados de tests, mensajes de error, URLs.
+- Mantene INTACTO todo el contenido factual del texto: paths, numeros de
+  linea, comandos, resultados de tests, mensajes de error, URLs.
 - Cambia SOLO el tono y la presentacion: tu voz, tu personalidad.
-- No agregues informacion tecnica nueva ni omitas ninguna.
+- No agregues informacion tecnica nueva ni omitas ninguna. Podes incorporar
+  los hechos del contexto del turno si suman a la entrega; NUNCA inventes
+  paths, numeros ni resultados que no esten en el texto o el contexto.
 - No menciones al worker, ni que hubo una transformacion: eres tu hablando.
 - Responde con el texto vestido y nada mas (sin preambulos ni cierre).
 
-# Texto a vestir
+{snapshot_block}# Texto a vestir
 {worker_output}
 """
 
@@ -283,4 +361,12 @@ REGLAS:
 """
 
 
-__all__ = ["Presenter", "_load_soul", "_factual_tokens", "_factual_integrity_ok"]
+__all__ = [
+    "Presenter",
+    "_load_soul",
+    "_factual_tokens",
+    "_factual_integrity_ok",
+    "_snapshot_allowed_text",
+    "_no_invented_tokens",
+    "_build_dress_output_prompt",
+]

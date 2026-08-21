@@ -149,11 +149,26 @@ scripts/run_tests.sh tests/test_arnes_gates.py tests/test_presenter.py \
   tests/test_e2e_arnes.py   # y el resto de la suite del plugin (16 archivos)
 ```
 
-Suite del plugin: 246 tests (223 + 23 nuevos de F5.3: on_finish, telemetría
-de fail-open, contrato model separado, directiva Rift 3). E2E
-(`tests/test_e2e_arnes.py`) conduce las superficies reales en el orden del
-core y verifica la metrica sagrada: el transcript queda RAW tras multiples
-turnos con presenter activo.
+Suite del plugin: 272 tests (incluye F5.3: on_finish + telemetría; F5.4:
+snapshot del turno + gate anti-invención). E2E (`tests/test_e2e_arnes.py`)
+conduce las superficies reales en el orden del core y verifica la metrica
+sagrada: el transcript queda RAW tras multiples turnos con presenter activo.
+
+## Snapshot del turno (F5.4)
+
+El vestidor no trabaja a ciegas: `_on_transform_llm_output` le pasa un
+dict de HECHOS del turno armado desde el estado del arnés (`files`
+escritos en el turno, veredictos `tests`/`lint`/`typecheck`,
+`finish_clean`). Regla de oro: solo datos escritos por hooks reales,
+nunca texto del modelo. El vestidor puede incorporar esos hechos a la
+entrega; el prompt los lista bajo `# Contexto del turno` antes del texto
+a vestir.
+
+**Gate anti-invención** (nuevo, complementa la integridad factual): todo
+token factual del VESTIDO (paths, URLs, números) debe existir en el texto
+crudo O en los hechos del snapshot. Un vestidor que menciona archivos que
+nadie escribió o conteos que nadie corrió miente sobre el trabajo →
+fail-open al crudo (contador `presenter_failopen_integrity`).
 
 ## Estado
 

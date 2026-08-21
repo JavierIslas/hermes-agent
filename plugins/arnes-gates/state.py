@@ -34,6 +34,11 @@ def _new_state() -> dict[str, Any]:
         "presenter_dressed_count": 0,  # telemetría: entregas vestidas en la sesión
         # F5.3 (2026-08-21): on_finish — viste SOLO el turno que cierra la tarea
         "presenter_finish_clean": False,  # latch: este turno cerró limpio (finish gate OK o commit)
+        # F5.4: snapshot del turno — archivos escritos y veredictos de ESTE turno
+        "presenter_turn_files": set(),  # paths escritos en el turno (reset por turn_id nuevo, patron D7)
+        "presenter_turn_tests": None,   # resumen del veredicto de tests del turno
+        "presenter_turn_lint": None,    # "limpio" | resumen del veredicto de lint
+        "presenter_turn_typecheck": None,
         # F5.3: telemetría de fail-open (dogfood D13: 2/3 vestidos morían en
         # timeout sin que nadie lo supiera — el presenter era teatro muerto)
         "presenter_failopen_integrity": 0,

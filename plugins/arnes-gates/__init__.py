@@ -12,6 +12,7 @@ tocar. El system prompt es advisory; los gates son duros.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -321,6 +322,87 @@ def _presenter_on_event(event: str) -> None:
         logger.debug("presenter: on_event falló (ignorado)", exc_info=True)
 
 
+# =============================================================================
+# F5.4: snapshot del turno — hechos estructurados para el vestidor.
+# =============================================================================
+
+def _presenter_tests_summary(output: Optional[str]) -> Optional[str]:
+    """Resumen corto del output de tests: '12 passed' | '3 failed, 10 passed'."""
+    if not output:
+        return None
+    m_pass = re.search(r"(\d+)\s+passed", output)
+    m_fail = re.search(r"(\d+)\s+failed", output)
+    if m_fail and int(m_fail.group(1)) > 0:
+        base = f"{m_fail.group(1)} failed"
+        if m_pass:
+            base += f", {m_pass.group(1)} passed"
+        return base
+    if m_pass and int(m_pass.group(1)) > 0:
+        return f"{m_pass.group(1)} passed"
+    return None
+
+
+def _presenter_record_verdict(tool_name: str) -> None:
+    """F5.4: registra el veredicto de la tool de verificación ejecutada.
+
+    Re-evalúa la evidencia cruda que el handler ya guardó en
+    last_*_output — el mismo código que el finish gate usa, cero parsing
+    nuevo. Solo herramientas arnes-gates (run_tests/run_lint/run_typecheck):
+    pytest via terminal crudo no produce evidencia estructurada de todos
+    modos (el finish gate tampoco la acepta).
+    """
+    try:
+        gate = gate_state.get()
+        if tool_name == "run_tests":
+            summary = _presenter_tests_summary(gate.get("last_test_output"))
+            gate["presenter_turn_tests"] = summary
+        elif tool_name == "run_lint":
+            output = gate.get("last_lint_output") or ""
+            from .evidence import evaluate_lint_evidence
+            ev = evaluate_lint_evidence(output)
+            gate["presenter_turn_lint"] = "limpio" if ev.verdict == "pass" else (
+                "con errores" if ev.verdict == "fail" else None
+            )
+        elif tool_name == "run_typecheck":
+            output = gate.get("last_typecheck_output") or ""
+            from .evidence import evaluate_typecheck_evidence
+            ev = evaluate_typecheck_evidence(output)
+            gate["presenter_turn_typecheck"] = "limpio" if ev.verdict == "pass" else (
+                "con errores" if ev.verdict == "fail" else None
+            )
+    except Exception:  # pragma: no cover - snapshot jamás rompe el turno
+        logger.debug("presenter: record_verdict falló (ignorado)", exc_info=True)
+
+
+def _presenter_turn_snapshot() -> Dict[str, Any]:
+    """Hechos estructurados del turno para el vestidor (F5.4).
+
+    Regla de oro: SOLO datos del gate_state (escritos por hooks reales),
+    nunca texto del modelo. Vacío si el turno no tiene nada digno de
+    contexto — un dict vacío apaga el bloque en el prompt.
+    """
+    try:
+        gate = gate_state.get()
+        snap: Dict[str, Any] = {}
+        files = sorted(gate.get("presenter_turn_files") or [])
+        if files:
+            snap["files"] = files
+        for key, state_key in (
+            ("tests", "presenter_turn_tests"),
+            ("lint", "presenter_turn_lint"),
+            ("typecheck", "presenter_turn_typecheck"),
+        ):
+            val = gate.get(state_key)
+            if val:
+                snap[key] = val
+        if gate.get("presenter_finish_clean"):
+            snap["finish_clean"] = True
+        return snap
+    except Exception:  # pragma: no cover - snapshot jamás rompe el turno
+        logger.debug("presenter: snapshot falló (ignorado)", exc_info=True)
+        return {}
+
+
 def _on_transform_llm_output(
     response_text: str = "",
     session_id: str = "",
@@ -353,7 +435,7 @@ def _on_transform_llm_output(
     except Exception as exc:
         logger.debug("presenter: ctx.llm no disponible, sin vestir (%s)", exc)
         return None
-    dressed = p.present(response_text)
+    dressed = p.present(response_text, ctx_snapshot=_presenter_turn_snapshot())
     # present() es fail-open (devuelve el original ante cualquier fallo):
     # solo reportamos transformación si realmente cambió algo. El contador
     # dressed/fail-open lo lleva on_event (telemetría F5.3).
@@ -845,6 +927,14 @@ def _on_post_tool_call(
         if path:
             index_service.update_file(path)
             embedding_service.update_file(path)
+            # F5.4: archivos del turno para el snapshot del vestidor.
+            gate["presenter_turn_files"].add(path)
+        return
+
+    # F5.4: veredictos de verificación del turno — re-evaluar la evidencia
+    # que los handlers ya guardaron (mismo código que el finish gate).
+    if tool_name in ("run_tests", "run_lint", "run_typecheck"):
+        _presenter_record_verdict(tool_name)
         return
 
     if tool_name == "terminal":
@@ -899,6 +989,11 @@ def _on_pre_api_request(
         # F5.3: el cierre limpio es una propiedad del TURNO, no acumulativa
         # (done sí lo es — sesion—; por eso este latch aparte).
         gate["presenter_finish_clean"] = False
+        # F5.4: snapshot del turno tambien es por-turno.
+        gate["presenter_turn_files"] = set()
+        gate["presenter_turn_tests"] = None
+        gate["presenter_turn_lint"] = None
+        gate["presenter_turn_typecheck"] = None
         if gate.get("circuit_tripped") or gate.get("block_count"):
             gate["circuit_tripped"] = False
             gate["block_count"] = 0
