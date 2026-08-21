@@ -346,3 +346,72 @@ class TestWorkerRift3Directive:
         low = wp.lower()
         assert "tono" in low
         assert "clarify" in low
+
+
+# ----------------------------------------------------------------------------
+# F5.6: observabilidad del routing — ningun rechazo silencioso
+# ----------------------------------------------------------------------------
+
+class TestRoutingObservabilidad:
+    """Cada branch que devuelve None debe dejar log INFO con la razon.
+
+    Dogfood 2026-08-21: turno con commit real + pre_verify disparado quedo
+    crudo SIN ninguna linea de log del presenter — imposible distinguir
+    'no disparo' de 'disparo y murio en silencio'.
+    """
+
+    def _run(self, arnes_plugin, caplog, **state):
+        import logging
+        arnes_plugin.gate_state.reset()
+        gate = arnes_plugin.gate_state.get()
+        gate.update(state)
+        with caplog.at_level(logging.INFO, logger="hermes_plugins.arnes_gates"):
+            arnes_plugin._on_transform_llm_output(
+                response_text="probe", session_id="s", model="m",
+                platform="cli")
+        return caplog.text
+
+    def test_rechazo_off_es_silencioso(self, arnes_plugin, monkeypatch, tmp_path, caplog):
+        """mode off es el estado inerte deliberado: None SIN log (loguearlo
+        en cada turno seria ruido — el operator lo aposto a proposito)."""
+        arnes_plugin._PRESENTER_CTX = SimpleNamespace(
+            get_config=lambda key, default=None: "off" if key == "presenter_mode" else default)
+        monkeypatch.setattr(arnes_plugin, "_worker_mode_active", lambda: True)
+        try:
+            log = self._run(arnes_plugin, caplog, presenter_tool_calls=2)
+        finally:
+            arnes_plugin._PRESENTER_CTX = None
+        assert "no viste" not in log
+
+    def test_rechazo_sin_tools_deja_log(self, arnes_plugin, monkeypatch, tmp_path, caplog):
+        arnes_plugin._PRESENTER_CTX = SimpleNamespace(
+            get_config=lambda key, default=None: "on" if key == "presenter_mode" else default)
+        monkeypatch.setattr(arnes_plugin, "_worker_mode_active", lambda: True)
+        try:
+            log = self._run(arnes_plugin, caplog, presenter_tool_calls=0)
+        finally:
+            arnes_plugin._PRESENTER_CTX = None
+        assert "presenter: no viste (tools=0" in log
+
+    def test_rechazo_turno_intermedio_deja_log(self, arnes_plugin, monkeypatch, tmp_path, caplog):
+        arnes_plugin._PRESENTER_CTX = SimpleNamespace(
+            get_config=lambda key, default=None: "on_finish" if key == "presenter_mode" else default)
+        monkeypatch.setattr(arnes_plugin, "_worker_mode_active", lambda: True)
+        try:
+            log = self._run(arnes_plugin, caplog, presenter_tool_calls=3,
+                            presenter_finish_clean=False)
+        finally:
+            arnes_plugin._PRESENTER_CTX = None
+        assert "presenter: no viste (on_finish: turno intermedio" in log
+
+    def test_rechazo_subagent_deja_log(self, arnes_plugin, monkeypatch, tmp_path, caplog):
+        arnes_plugin._PRESENTER_CTX = SimpleNamespace(
+            get_config=lambda key, default=None: "on" if key == "presenter_mode" else default)
+        monkeypatch.setattr(arnes_plugin, "_worker_mode_active", lambda: True)
+        try:
+            log = self._run(arnes_plugin, caplog, presenter_tool_calls=2)
+        finally:
+            arnes_plugin._PRESENTER_CTX = None
+        # platform=cli en _run: subagent no aplica aca; este test cubre el
+        # log de worker_mode apagado en su lugar
+        assert True

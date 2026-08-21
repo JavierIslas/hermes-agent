@@ -419,21 +419,35 @@ def _on_transform_llm_output(
     """
     gate = gate_state.get()
     if not _presenter_enabled_for(platform):
+        if _presenter_mode() != "off":
+            logger.info(
+                "presenter: no viste (routing: mode=%s worker_mode=%s platform=%s)",
+                _presenter_mode(), _worker_mode_active(), platform or "?",
+            )
         return None
     if gate.get("presenter_tool_calls", 0) <= 0:
+        logger.info("presenter: no viste (tools=0: charla pura no se viste)")
         return None  # (d) charla pura: no se viste
     if _presenter_mode() == "on_finish" and not gate.get("presenter_finish_clean"):
+        logger.info(
+            "presenter: no viste (on_finish: turno intermedio — latch "
+            "finish_clean no armado; se arma con pre_verify tras ediciones "
+            "o commit exitoso)")
         return None  # Rift 5: turno intermedio — solo se viste el cierre
     if _PRESENTER_CTX is None:
+        logger.info("presenter: no viste (sin _PRESENTER_CTX)")
         return None
     try:
         p = presenter_mod.Presenter(
-            _PRESENTER_CTX.llm,
+            getattr(_PRESENTER_CTX, "llm", None),
             get_config=_PRESENTER_CTX.get_config,
             on_event=_presenter_on_event,
         )
     except Exception as exc:
-        logger.debug("presenter: ctx.llm no disponible, sin vestir (%s)", exc)
+        logger.info("presenter: no viste (ctx roto: %s)", exc)
+        return None
+    if p._llm is None:
+        logger.info("presenter: no viste (ctx.llm no disponible)")
         return None
     dressed = p.present(response_text, ctx_snapshot=_presenter_turn_snapshot())
     # present() es fail-open (devuelve el original ante cualquier fallo):
