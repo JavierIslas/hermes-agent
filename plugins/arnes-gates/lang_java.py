@@ -63,6 +63,17 @@ _KEYWORDS = frozenset(
     """.split()
 )
 
+# Keywords de control: nunca pueden ser el "tipo de retorno" de una declaración
+# real. Si el regex matchea "if (x) {" como método, el group(1) cae acá.
+# Las primitivas (void/int/boolean/...) NO están: sí son tipos de retorno.
+_CONTROL_KEYWORDS = frozenset(
+    """
+    break case catch continue default do else finally for goto if implements
+    import instanceof new package permits return super switch this throw
+    throws try while yield
+    """.split()
+)
+
 
 def _strip_comments_strings(source: str) -> str:
     """Reemplaza comentarios y strings por espacios (mismo layout de líneas).
@@ -212,6 +223,23 @@ class JavaAdapter(LanguageAdapter):
             "hash": __import__("hashlib").sha256(source.encode("utf-8")).hexdigest(),
         }
 
+    @staticmethod
+    def _brace_depth_at(body_start: int, clean: str, idx: int) -> int:
+        """Profundidad de llaves en idx, relativa al "{" de la clase (start).
+
+        Escanea desde el propio "{" de la clase: miembros directos = 1,
+        statements dentro de un método = 2. Relativo (no absoluto al archivo)
+        para que las clases anidadas funcionen igual.
+        """
+        depth = 0
+        for i in range(body_start, idx):
+            c = clean[i]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+        return depth
+
     def _collect_methods(
         self,
         clean: str,
@@ -223,7 +251,20 @@ class JavaAdapter(LanguageAdapter):
         start, end = body
         for m in _RE_METHOD_DECL.finditer(clean, start, end):
             ret_type, name = m.group(1).strip(), m.group(2)
-            if name in _KEYWORDS or ret_type in _KEYWORDS:
+            if name in _KEYWORDS:
+                continue
+            # ret_type puede ser una primitiva (void/int/boolean...) — son
+            # tipos de retorno VÁLIDOS en declaraciones. Lo que sí descarta
+            # un falso método: que el "tipo" sea una keyword de control
+            # (if/for/while/switch/catch) — esas nunca preceden a una decl.
+            if ret_type in _CONTROL_KEYWORDS:
+                continue
+            # Filtro anti falsos positivos: una DECLARACIÓN de método vive a
+            # profundidad de llaves 1 (miembro directo de la clase). Una LLAMADA
+            # (assertEquals(x, y)) matchea el mismo regex pero vive dentro de
+            # otro cuerpo, a profundidad >= 2. Sin esto, "foo(a, b) {" del
+            # cuerpo de un método se indexa como método fantasma.
+            if self._brace_depth_at(start, clean, m.start()) != 1:
                 continue
             # La "(" ya la consumió el regex: buscar params hasta ")" y la "{".
             paren_close = clean.find(")", m.end(), end)
@@ -275,3 +316,18 @@ class JavaAdapter(LanguageAdapter):
 
     def extract_usages(self, content: str) -> set[str]:
         return {t for t in _RE_IDENT.findall(content) if t not in _KEYWORDS}
+
+
+# Auto-registro: cubre el import directo de lang_java (sin pasar por
+# lang_adapter primero). Si lang_adapter nos está importando a nosotros,
+# su guard de re-entrancia ya manejó el ciclo y "java" estará (o no) en el
+# registry cuando este módulo termine de cargar; el check de membresía evita
+# el doble registro.
+def _self_register() -> None:
+    from . import lang_adapter as _la
+
+    if "java" not in _la._registry:
+        _la.register(JavaAdapter())
+
+
+_self_register()

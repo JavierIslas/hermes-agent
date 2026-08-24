@@ -19,6 +19,7 @@ Si un lenguaje no tiene adapter:
 """
 from __future__ import annotations
 
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Optional
@@ -171,10 +172,20 @@ def _ensure_java_registered() -> None:
 
     Java se soporta desde 2026-08-21 (Nivel 1: regex + brace matching) para
     la migración del WS Java 8 → 25. struct_hash=None → Q3/Q4 degradan.
+
+    Guard de re-entrancia: lang_java importa LanguageAdapter de acá al inicio
+    de su carga; si ÉL nos disparó, todavía no tiene JavaAdapter definido y
+    se auto-registra al final de su módulo. Importarlo acá en ese estado
+    sería un ciclo fatal (ImportError: partially initialized module).
     """
-    if "java" not in _registry:
-        from .lang_java import JavaAdapter
-        register(JavaAdapter())
+    if "java" in _registry:
+        return
+    partial = sys.modules.get(__package__ + ".lang_java")
+    if partial is not None and not hasattr(partial, "JavaAdapter"):
+        return  # lang_java mid-import: se auto-registra al final de su carga
+    from .lang_java import JavaAdapter
+
+    register(JavaAdapter())
 
 
 # Auto-registro al importar.

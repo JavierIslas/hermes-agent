@@ -97,6 +97,34 @@ def test_parse_source_clase_y_metodos():
     assert "procesar" in names
 
 
+JAVA_TEST_LIKE = """\
+package com.x;
+
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+class ServicioTest {
+    @Test
+    void incrementarSumaUno() {
+        Servicio s = new Servicio();
+        s.incrementar();
+        assertEquals(2, s.getContador());
+    }
+}
+"""
+
+
+def test_parse_source_llamada_no_es_metodo():
+    # Regresión (cazado en smoke real 2026-08-24): assertEquals(2, x) dentro
+    # del cuerpo de un test se matcheaba como método fantasma. Una llamada
+    # vive a profundidad de llaves >= 2; solo profundidad 1 es declaración.
+    adapter = _la().get_adapter("java")
+    result = adapter.parse_source(JAVA_TEST_LIKE, "ServicioTest.java")
+    quals = [s["qualname"] for s in result["symbols"]]
+    assert "ServicioTest.incrementarSumaUno" in quals  # void @Test: se indexa
+    assert "ServicioTest.assertEquals" not in quals  # llamada: NO es método
+
+
 def test_parse_source_qualname():
     adapter = _la().get_adapter("java")
     result = adapter.parse_source(JAVA_OK, "src/main/java/com/x/ws/Servicio.java")
