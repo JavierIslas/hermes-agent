@@ -66,6 +66,15 @@ DIRS_RUIDO = {
     # incluyendo su venv con site-packages completo: PIL/aiohttp/... → 168
     # falsos dangling contra el commit gate). Es historia, no codebase.
     "bk",
+    # Java: salida de build (maven target/, gradle build/, IntelliJ out/) y
+    # metadata de IDEs/tooling. target/classes/*.class y los .java generados
+    # por annotation processors serían bytecode/basura indexada (mismo shape
+    # que node_modules para el índice). Desde 2026-08-21 (soporte Java).
+    "target",
+    "build",
+    "out",
+    ".gradle",
+    ".idea",
 }
 
 

@@ -166,5 +166,17 @@ def _ensure_python_registered() -> None:
         register(PythonAdapter())
 
 
+def _ensure_java_registered() -> None:
+    """Registra el JavaAdapter si no está ya registrado.
+
+    Java se soporta desde 2026-08-21 (Nivel 1: regex + brace matching) para
+    la migración del WS Java 8 → 25. struct_hash=None → Q3/Q4 degradan.
+    """
+    if "java" not in _registry:
+        from .lang_java import JavaAdapter
+        register(JavaAdapter())
+
+
 # Auto-registro al importar.
 _ensure_python_registered()
+_ensure_java_registered()

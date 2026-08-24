@@ -35,6 +35,11 @@ services:
     network_mode: host
     volumes:
       - ~/.hermes:/opt/data
+      - /home/ips/workspace:/workspace
+      # Use the host's systemd-resolved stub (127.0.0.53) instead of Docker's
+      # frozen resolv.conf copy. The stub caches responses and updates itself
+      # when the host changes networks. Requires network_mode: host.
+      - ~/.hermes/cache/resolv-stub.conf:/etc/resolv.conf:ro
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}

@@ -124,7 +124,7 @@ RUN_TESTS_SCHEMA: dict[str, Any] = {
         "Corre los tests del proyecto y prende el flag tests_green si pasan "
         "(rc=0). El finish gate exige tests_green antes de cerrar una task "
         "de coding. El runner se detecta del filesystem (pytest, npm, go, "
-        "cargo, make)."
+        "cargo, make, mvn/gradle — Java usa el wrapper del repo si existe)."
     ),
     "parameters": {
         "type": "object",
@@ -144,7 +144,8 @@ RUN_LINT_SCHEMA: dict[str, Any] = {
     "description": (
         "Corre el linter del proyecto y prende el flag lint_green si pasa "
         "(rc=0). El finish gate exige lint_green antes de cerrar. El linter "
-        "se detecta del filesystem (ruff, flake8, eslint)."
+        "se detecta del filesystem (ruff, flake8, eslint, checkstyle para "
+        "Java vía mvn/gradle)."
     ),
     "parameters": {
         "type": "object",

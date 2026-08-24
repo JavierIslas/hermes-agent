@@ -121,6 +121,20 @@ def _detect_tests_setup(root: Path) -> tuple[list[str] | None, Path | None]:
             return (["go", "test", "./..."], d)
         if (d / "Cargo.toml").exists():
             return (["cargo", "test"], d)
+        # Java (desde 2026-08-21): el wrapper del repo manda sobre el mvn/gradle
+        # del sistema (versión pinneada por el proyecto). Maven antes que Gradle
+        # si ambos existen (monorepos híbridos raros; pom.xml es más específico).
+        # También antes que make: pom.xml/build.gradle son manifests de build
+        # con ciclo de vida propio; un Makefile en un repo Java suele ser
+        # atajo de proyecto (alias), no el runner canónico.
+        if (d / "pom.xml").exists():
+            if (d / "mvnw").exists():
+                return (["./mvnw", "test"], d)
+            return (["mvn", "test"], d)
+        if (d / "build.gradle").exists() or (d / "build.gradle.kts").exists():
+            if (d / "gradlew").exists():
+                return (["./gradlew", "test"], d)
+            return (["gradle", "test"], d)
         if _es_make_test(d):
             return (["make", "test"], d)
     return (None, None)
@@ -136,6 +150,16 @@ def _detect_lint_setup(root: Path) -> tuple[list[str] | None, Path | None]:
             return ([_python_for(d), "-m", "flake8"], d)
         if _es_eslint(d):
             return (["npx", "eslint"], d)
+        # Java (desde 2026-08-21): checkstyle si hay config explícita o el
+        # plugin declarado en el build. El wrapper manda si existe.
+        if _es_checkstyle(d):
+            if (d / "pom.xml").exists():
+                if (d / "mvnw").exists():
+                    return (["./mvnw", "checkstyle:check"], d)
+                return (["mvn", "checkstyle:check"], d)
+            if (d / "gradlew").exists():
+                return (["./gradlew", "checkstyleMain", "checkstyleTest"], d)
+            return (["gradle", "checkstyleMain", "checkstyleTest"], d)
     return (None, None)
 
 
@@ -203,6 +227,26 @@ def _es_flake8(d: Path) -> bool:
 
 def _es_eslint(d: Path) -> bool:
     return any(d.glob(".eslintrc*")) or any(d.glob("eslint.config.*"))
+
+
+def _es_checkstyle(d: Path) -> bool:
+    """Java: checkstyle si hay config explícita o plugin declarado en el build.
+
+    Config explícita: checkstyle.xml / google_checks.xml / sun_checks.xml en la
+    raíz o config/checkstyle/. Plugin: checkstyle-maven-plugin en pom.xml o
+    'checkstyle' en build.gradle(.kts).
+    """
+    for nombre in ("checkstyle.xml", "google_checks.xml", "sun_checks.xml"):
+        if (d / nombre).exists() or (d / "config" / "checkstyle" / nombre).exists():
+            return True
+    pom = d / "pom.xml"
+    if pom.exists() and "checkstyle" in pom.read_text(encoding="utf-8"):
+        return True
+    for gradle in ("build.gradle", "build.gradle.kts"):
+        f = d / gradle
+        if f.exists() and "checkstyle" in f.read_text(encoding="utf-8"):
+            return True
+    return False
 
 
 def _es_mypy(d: Path) -> bool:

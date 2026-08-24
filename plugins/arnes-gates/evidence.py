@@ -51,14 +51,35 @@ _ENV_FAIL_PATTERNS = [
     "ImportError",
     "ModuleNotFoundError",
     "Permission denied",
+    # Java (desde 2026-08-21): dependencias no resueltas / repo inalcanzable
+    # = fallo de environment del runner, no tests rojos.
+    "Could not resolve dependencies",
+    "Could not transfer artifact",
+    "Could not resolve all files",
+    "Non-resolvable parent POM",
+    "Cannot access ",
 ]
 
 # Linters: ruff/flake8/mypy
 _RE_RUFF_CLEAN = re.compile(r"All checks passed|Found 0 errors")
 _RE_RUFF_ERRORS = re.compile(r"Found (\d+) error")
-_RE_GENERIC_LINT_ERRORS = re.compile(r"(\d+)\s+(error|warning|violation)", re.IGNORECASE)
+_RE_GENERIC_LINT_ERRORS = re.compile(r"(\d+)\s+(error|warning|violation)s?\b", re.IGNORECASE)
 _RE_MYPY_OK = re.compile(r"Success: no issues found|Found 0 errors")
 _RE_MYPY_ERRORS = re.compile(r"Found (\d+) error")
+
+# Java — maven surefire (una línea por clase + resumen "Results:"). Se usa el
+# ÚLTIMO match (el resumen total, no la primera clase).
+_RE_SUREFIRE = re.compile(r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+)")
+# Java — gradle (salida plain): "3 tests completed, 1 failed"
+_RE_GRADLE_DONE = re.compile(r"(\d+) tests completed,\s*(\d+) failed")
+# Java — veredictos de build:
+_RE_BUILD_FAILURE = re.compile(r"BUILD FAILURE|BUILD FAILED\b")
+_RE_BUILD_OK = re.compile(r"BUILD SUCCESSFUL?\b")
+# Java — checkstyle:
+_RE_CHECKSTYLE_DONE = re.compile(
+    r"There (?:is|are) (\d+) (error|warning)s? reported", re.IGNORECASE
+)
+_RE_CHECKSTYLE_AUDIT = re.compile(r"Audit done\.?", re.IGNORECASE)
 
 
 # =============================================================================
@@ -96,8 +117,8 @@ def evaluate_test_evidence(output: Optional[str]) -> Evidence:
             return Evidence("pass", f"{n_passed} tests pasaron (rc=0)")
 
     # ¿Tests fallaron sin passed?
-    if _RE_PYTEST_FAILED.search(output):
-        failed_match = _RE_PYTEST_FAILED.search(output)
+    failed_match = _RE_PYTEST_FAILED.search(output)
+    if failed_match and int(failed_match.group(1)) > 0:
         return Evidence(
             "fail",
             f"{failed_match.group(1)} tests fallaron. "
@@ -116,12 +137,71 @@ def evaluate_test_evidence(output: Optional[str]) -> Evidence:
             "pero NO se verificó nada. Considerá escribir tests."
         )
 
+    # ---- Java (desde 2026-08-21): maven surefire / gradle test ----
+    ev_java = _evaluate_java_tests(output)
+    if ev_java is not None:
+        return ev_java
+
     # Output no reconocido: fail-open honesto.
     return Evidence(
         "fail_open",
         "output de tests no reconocido. No se pudo verificar automáticamente. "
         "El finish gate no bloquea, pero revisá el output manualmente."
     )
+
+
+def _evaluate_java_tests(output: str) -> Optional[Evidence]:
+    """Evalúa output de runners Java (maven surefire / gradle test). None si no aplica."""
+    # Maven surefire: usar el ÚLTIMO "Tests run:" (el resumen total después de
+    # "Results:", no la primera clase).
+    matches = list(_RE_SUREFIRE.finditer(output))
+    if matches:
+        total, failures, errors = (int(g) for g in matches[-1].groups())
+        malos = failures + errors
+        if malos > 0:
+            return Evidence(
+                "fail",
+                f"maven: {malos} test(s) fallaron ({failures} failures, "
+                f"{errors} errors) de {total}. Corregí los tests antes de cerrar."
+            )
+        if total > 0:
+            return Evidence("pass", f"maven: {total} tests pasaron (0 failures)")
+        # total == 0: BUILD sin tests — no mintamos un verde que no vimos.
+        return Evidence(
+            "fail_open",
+            "maven corrió pero surefire reportó 0 tests. El finish gate no "
+            "bloquea, pero NO se verificó nada."
+        )
+
+    # Gradle: "N tests completed, M failed" + BUILD SUCCESSFUL/FAILED.
+    gradle = _RE_GRADLE_DONE.search(output)
+    if gradle:
+        total, failed = int(gradle.group(1)), int(gradle.group(2))
+        if failed > 0:
+            return Evidence(
+                "fail",
+                f"gradle: {failed} de {total} tests fallaron. "
+                "Corregí los tests antes de cerrar."
+            )
+        return Evidence("pass", f"gradle: {total} tests pasaron")
+
+    # Sin summary de tests: el veredicto del build manda.
+    if _RE_BUILD_FAILURE.search(output):
+        # ¿Fue por compilación (error de código) o por deps (ya cubierto arriba
+        # por _ENV_FAIL_PATTERNS)? Compilación rota = código roto = fail real.
+        return Evidence(
+            "fail",
+            "BUILD FAILURE sin resumen de tests: lo más probable es que ni "
+            "compilara. Corregí los errores de compilación antes de cerrar."
+        )
+    if _RE_BUILD_OK.search(output):
+        # BUILD SUCCESSFUL sin conteo de tests: no mintamos verde.
+        return Evidence(
+            "fail_open",
+            "build exitoso pero sin resumen de tests reconocible. El finish "
+            "gate no bloquea, pero revisá que los tests hayan corrido."
+        )
+    return None
 
 
 def evaluate_lint_evidence(output: Optional[str]) -> Evidence:
@@ -161,11 +241,28 @@ def evaluate_lint_evidence(output: Optional[str]) -> Evidence:
 
     generic = _RE_GENERIC_LINT_ERRORS.search(output)
     if generic:
-        return Evidence(
-            "fail",
-            f"linter encontró {generic.group(1)} {generic.group(2)}s. "
-            "Corregí antes de cerrar."
-        )
+        n = int(generic.group(1))
+        if n > 0:
+            return Evidence(
+                "fail",
+                f"linter encontró {n} {generic.group(2)}s. Corregí antes de cerrar."
+            )
+        # n == 0: "0 errors/warnings" = limpio, no fallo.
+
+    # Java — checkstyle: "There is/are N errors/warnings reported by checkstyle".
+    cs = _RE_CHECKSTYLE_DONE.search(output)
+    if cs:
+        n = int(cs.group(1))
+        if n > 0:
+            return Evidence(
+                "fail",
+                f"checkstyle reportó {n} {cs.group(2)}s. Corregí antes de cerrar."
+            )
+        return Evidence("pass", "checkstyle limpio (0 reportados)")
+
+    # Checkstyle sin conteo: "Starting audit... Audit done." sin errores = pass.
+    if _RE_CHECKSTYLE_AUDIT.search(output):
+        return Evidence("pass", "checkstyle: audit completo sin violaciones reportadas")
 
     # Output no reconocido: si está vacío o no tiene errores, asumir pass.
     # Muchos linters no imprimen nada cuando todo está limpio.
