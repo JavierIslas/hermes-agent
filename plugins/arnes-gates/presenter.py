@@ -50,6 +50,71 @@ _RE_NUM = re.compile(r"\d+(?:\.\d+)?")
 # tratan como HECHOS NUMÉRICOS: sus números deben sobrevivir, su formato no.
 _RE_DIFFSTAT = re.compile(r"[+-]\d+(?:\.\d+)?(?:/[+-]\d+(?:\.\d+)?)?")
 _RE_RATIO = re.compile(r"(?<![\w./])\d+(?:\.\d+)?/\d+(?:\.\d+)?(?![\w./])")
+# F5.7 (2026-08-28, produccion): marcadores de lista numerada ("1." al
+# inicio de linea) NO son hechos. El vestidor convierte listas en prosa o
+# re-numera; exigir el "1" como substring mataba vestidas legitimas
+# (fail-open por token perdido '1', sesion 20260827_114536).
+_RE_LIST_MARKER = re.compile(r"(?m)^\s*\d+[.)]\s")
+# F5.7: numero de prosa vs numero exigible. Un numero con anclaje tecnico
+# inmediato (unidad, #issue, version, sha, fecha) o pegado a un sustantivo
+# de trabajo (tests, lineas, archivos, errores) ES un hecho: el arnes
+# existe para que esa evidencia no se distorsione. Un numero suelto en
+# prosa ("una oracion de 40 palabras") es verbalizable y NO se exige: el
+# vestidor puede escribirlo en palabras sin perder verdad.
+_RE_NUM_ANCLADO = re.compile(
+    r"\d+(?:\.\d+)?(?:[.,]\d+)*"
+    r"\s?(?:%|ms|us|ns|seg|min|horas|px|usd|€|\$|º|°"
+    r"|GB|MB|KB|TB|[KM]B?"
+    r"|[sx]\b"
+    r"|(?:tests?|passed|lineas?|líneas?|archivos?|errores?|fallos?|failures?)\b)"
+)
+_RE_NUM_PEGADO = re.compile(
+    r"#\d+"
+    r"|\b\d+(?:\.\d+)+(?:[.-]\d+)*\b"  # version 1.2.3
+    r"|\b\d+(?:-\d+)+\b"               # fecha/rango 2026-08-28
+    r"|\b[a-f0-9]{7,40}\b"             # commit sha corto/largo
+)
+
+
+def _numero_exigible(text: str, num: str, start: int, end: int,
+                     pegado: list[tuple[int, int]],
+                     reformateable: list[tuple[int, int]]) -> bool:
+    """True si ``num`` (match de _RE_NUM en ``text``) es un hecho tecnico
+    exigible y no un numero de prosa verbalizable.
+
+    Exigible: unidad pegada (40ms, 5.2s), contador de trabajo ("227
+    tests", "5 archivos") — la evidencia que el arnes jura no
+    distorsionar — o numero dentro de un diffstat/ratio (F5.5: el
+    formato se reformatea, los numeros no). No exigible: numero de
+    prosa ("40 palabras", "los 4 hooks") — verbalizarlo ("cuarenta")
+    no miente. Los numeros DENTRO de un pegado (sha/version/fecha) se
+    omiten aqui: el pegado entero ya se exige como token.
+    """
+    for s, e in pegado:
+        if s <= start and end <= e:
+            return False  # cubierto por el token pegado completo
+    for s, e in reformateable:
+        if s <= start and end <= e:
+            return True  # numero de diffstat/ratio: exigir el numero
+    if _RE_NUM_ANCLADO.match(text, start):
+        return True
+    return False
+
+
+def _es_path(tok: str) -> bool:
+    """True si un token con barra tiene forma de path exigible.
+
+    F5.7 (produccion 2026-08-27): 'r/godot' (subreddit) y 'pytest/ruff'
+    (dos binarios) mataban vestidas exigidos como substring. Forma de
+    path: barra inicial/final, punto en el token (extension), o dos o
+    mas barras (profundidad). 'codex/hooks/' y 'agents/skills/' (directorios
+    relativos) siguen siendo paths; 'r/godot' no.
+    """
+    if tok.startswith("/") or tok.endswith("/"):
+        return True
+    if "." in tok:
+        return True
+    return tok.count("/") >= 2
 
 
 def _load_soul() -> Optional[str]:
@@ -91,21 +156,53 @@ def _factual_tokens(text: str) -> set[str]:
     NUMEROS ya entran via _RE_NUM y sobreviven aunque el vestidor los
     reformatee ("+462 líneas / -15"). El resto de tokens con '/' son
     paths y se exigen exactos.
+
+    F5.7 (2026-08-28, produccion): tres clases de falsos positivos
+    cazados con evidencia (3/3 fail-opens del 27/08 fueron del
+    extractor, no del vestidor):
+    - 'r/godot' (subreddit) exigido como path → solo se exige un token
+      con barra si tiene forma de path (``_es_path``).
+    - '1' de marcador de lista numerada → los marcadores se borran
+      antes de extraer.
+    - '40' de "oracion de 40 palabras" → solo numeros con anclaje
+      tecnico se exigen (``_numero_exigible``); la prosa puede
+      verbalizarse.
     """
+    # F5.7: los marcadores de lista ("1." a inicio de linea) no son hechos.
+    text = _RE_LIST_MARKER.sub(" ", text)
     tokens: set[str] = set()
     for url in _RE_URL.findall(text):
         url = url.rstrip(".,;:!?)]}\"'")
         if url:
             tokens.add(url)
+    # F5.7: identificadores pegados (sha, version, fecha, #issue) se exigen
+    # como token COMPLETO — mas fuerte que antes (antes sus digitos sueltos
+    # eran exigibles y el token en si no).
+    pegado_spans: list[tuple[int, int]] = []
+    for m in _RE_NUM_PEGADO.finditer(text):
+        pegado_spans.append(m.span())
+        tokens.add(m.group(0))
+    # F5.5: los numeros dentro de diffstats/ratios siguen exigidos.
+    reformateable_spans: list[tuple[int, int]] = []
+    for rx in (_RE_DIFFSTAT, _RE_RATIO):
+        for m in rx.finditer(text):
+            reformateable_spans.append(m.span())
     for tok in text.split():
         tok = tok.strip(".,;:!?()[]{}\"'`<>*")
-        if not tok or "/" not in tok or tok.startswith("http"):
+        if not tok or len(tok) < 2 or "/" not in tok or tok.startswith("http"):
             continue
         if _RE_DIFFSTAT.fullmatch(tok) or _RE_RATIO.fullmatch(tok):
             continue  # diffstat/ratio: sus numeros ya estan via _RE_NUM
+        if not _es_path(tok):
+            continue  # barra sin forma de path: prosa (r/godot), no hecho
+        if "`" in tok:
+            continue  # backtick interna: token irreproducible, no exigible
         tokens.add(tok)
-    for num in _RE_NUM.findall(text):
-        tokens.add(num)
+    for m in _RE_NUM.finditer(text):
+        num = m.group(0)
+        if _numero_exigible(text, num, m.start(), m.end(),
+                            pegado_spans, reformateable_spans):
+            tokens.add(num)
     return tokens
 
 

@@ -269,6 +269,68 @@ class TestFactualIntegrity:
         out = p.present("Commiteado 27b28627d0: 5 archivos, +462/-15.")
         assert out == "El ritual quedo sellado en 27b28627d0: 5 archivos, sumo +462 lineas y borro 15, criatura."
 
+    # -- F5.7 (2026-08-28): falsos positivos de integridad cazados en
+    #    produccion (sesiones 20260827_114536 y 20260826_112225, 3/3
+    #    fail-opens del dia fueron del EXTRACTOR, no del vestidor).
+
+    def test_lista_numerada_no_exige_sus_marcadores(self, arnes_plugin, tmp_path, monkeypatch):
+        """Produccion 2026-08-27 (20260827_114536): fail-open por token
+        perdido '1' — el raw tenia una lista numerada y el vestidor la
+        convirtio en prosa conservando el contenido. Los marcadores 1. 2.
+        3. no son hechos: si el vestidor re-numera o desenumerar, el gate
+        no debe tronar."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="Creé codex/hooks.json y los hooks quedaron adaptados, criatura.")
+        p = arnes_plugin.presenter.Presenter(llm)
+        raw = "Resumen:\n\n1. `.codex/hooks.json` creado\n2. hooks adaptados"
+        out = p.present(raw)
+        assert out == "Creé codex/hooks.json y los hooks quedaron adaptados, criatura."
+
+    def test_token_con_barra_no_path_no_se_exige(self, arnes_plugin, tmp_path, monkeypatch):
+        """Produccion 2026-08-27 (20260826_112225): fail-open por token
+        perdido 'r/godot' — un subreddit NO es un path de filesystem. Lo
+        mismo con 'pytest/ruff' (binarios mencionados juntos). Un token
+        con barra que no tiene forma de path (sin punto en ningun
+        segmento, sin slash inicial) se deja pasar: es prosa, no hecho
+        tecnico."""
+        ft = arnes_plugin.presenter._factual_tokens
+        assert "r/godot" not in ft("el que un lector de r/godot va a citar")
+        assert "pytest/ruff" not in ft("los runners pytest/ruff no existen")
+        # los paths REALES siguen siendo tokens exigidos (el strip canonico
+        # de puntuacion quita el punto inicial de `.codex/hooks.json`)
+        assert "/workspace/CombatCardSystem/devlog.html" in ft(
+            "escribi /workspace/CombatCardSystem/devlog.html")
+        assert "codex/hooks.json" in ft("cree `.codex/hooks.json` y `.codex/hooks/`")
+        assert "codex/hooks/" in ft("cree `.codex/hooks.json` y `.codex/hooks/`")
+
+    def test_backticks_embebidas_no_rompen_el_token(self, arnes_plugin, tmp_path, monkeypatch):
+        """Produccion 2026-04-27: tokens como 'codex/`+`.agents/' (backticks
+        internas del markdown crudo) son irreproducibles como substring.
+        El strip actual ya limpia extremos; este test documenta que el
+        token resultante debe ser reproducible: si un token contiene
+        backtick interna, no es exigible."""
+        ft = arnes_plugin.presenter._factual_tokens
+        toks = ft("renombré `.codex/` a `.agents/` y quedó `codex/`+`.agents/`")
+        for t in toks:
+            assert "`" not in t, f"token con backtick interna: {t!r}"
+
+    def test_prosa_con_numeros_sueltos_puede_verbalizarse(self, arnes_plugin, tmp_path, monkeypatch):
+        """Produccion 2026-08-27 (20260826_112225): fail-open por token
+        perdido '40' — el raw decia 'una sola oración de 40 palabras', un
+        meta-comentario editorial, y el vestidor lo verbalizo. Un numero
+        de prosa (no medible, no identificador) no debe ser exigido como
+        substring cuando el vestidor lo reformatea a palabras. Politica:
+        SOLO los numeros pegados a unidades técnicas/identificadores se
+        exigen; numeros de prosa suelta no."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="Era una oración larguísima, criatura — la partí en dos sin perder el sentido.")
+        p = arnes_plugin.presenter.Presenter(llm)
+        raw = "la inversión enfática era una sola oración de 40 palabras."
+        out = p.present(raw)
+        assert out != raw
+
 class TestSettings:
     def _mk(self, arnes_plugin, tmp_path, monkeypatch, settings, reply="vestido ok"):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
