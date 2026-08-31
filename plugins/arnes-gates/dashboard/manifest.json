@@ -1,0 +1,13 @@
+{
+  "name": "arnes-viewer",
+  "label": "Worker/Presenter",
+  "description": "Debug del par: output crudo del worker vs vestido del presenter, con outcome y contexto del turno. Lee presenter_pairs.jsonl.",
+  "icon": "SplitSquareHorizontal",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/viewer",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
