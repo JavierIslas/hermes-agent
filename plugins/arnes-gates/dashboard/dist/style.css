@@ -1,0 +1,172 @@
+/*
+ * arnes-viewer — estilos autocontenidos (patrón kanban).
+ *
+ * El dashboard NO expone sus utilities Tailwind a plugins: el bundle CSS
+ * del host solo incluye clases del source del dashboard. Clases propias
+ * prefijadas .av- para no chocar con temas.
+ */
+.arnes-viewer {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  padding: 12px;
+  color: var(--text-primary, #e4e4e7);
+  font-size: 13px;
+}
+
+/* ---- Columna lista ---- */
+.av-list {
+  display: flex;
+  flex-direction: column;
+  width: 340px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-color, #27272a);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-surface, transparent);
+}
+.av-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color, #27272a);
+  font-size: 12px;
+  font-weight: 600;
+}
+.av-list-body {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+.av-auto-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+/* ---- Fila de turno ---- */
+.av-turn {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.av-turn:hover { background: rgba(128, 128, 128, 0.12); }
+.av-turn.av-selected { background: rgba(128, 128, 128, 0.18); }
+.av-turn-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  opacity: 0.75;
+}
+.av-turn-msg {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+/* ---- Badges ---- */
+.av-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+.av-badge-dressed { color: #34d399; border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.08); }
+.av-badge-raw { color: #a1a1aa; border-color: rgba(161, 161, 170, 0.4); background: rgba(161, 161, 170, 0.08); }
+.av-badge-fail { color: #f87171; border-color: rgba(248, 113, 113, 0.4); background: rgba(248, 113, 113, 0.08); }
+
+/* ---- Columna detalle ---- */
+.av-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+.av-userbox {
+  border: 1px solid var(--border-color, #27272a);
+  border-radius: 6px;
+  padding: 12px;
+}
+.av-userbox-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.55;
+  margin-bottom: 4px;
+}
+.av-userbox-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  opacity: 0.7;
+}
+.av-panels {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+  align-items: stretch;
+}
+.av-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.av-panel-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.55;
+}
+.av-panel pre {
+  margin: 0;
+  max-height: 460px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--border-color, #27272a);
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  background: rgba(9, 9, 11, 0.6);
+}
+.av-empty {
+  padding: 24px;
+  text-align: center;
+  opacity: 0.6;
+}
+.av-error {
+  padding: 12px;
+  color: #f87171;
+  font-size: 12px;
+}
