@@ -79,7 +79,7 @@
 
     const load = useCallback(async function () {
       try {
-        const data = await fetchJSON("/api/plugins/arnes-viewer/pairs");
+        const data = await fetchJSON("/api/plugins/arnes-gates/pairs");
         setEntries(data.entries || []);
         setError(null);
       } catch (e) {
@@ -146,5 +146,5 @@
     );
   };
 
-  window.__HERMES_PLUGINS__.register("arnes-viewer", ViewerPage);
+  window.__HERMES_PLUGINS__.register("arnes-gates", ViewerPage);
 })();

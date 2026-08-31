@@ -1,5 +1,5 @@
 {
-  "name": "arnes-viewer",
+  "name": "arnes-gates",
   "label": "Worker/Presenter",
   "description": "Debug del par: output crudo del worker vs vestido del presenter, con outcome y contexto del turno. Lee presenter_pairs.jsonl.",
   "icon": "SplitSquareHorizontal",
