@@ -16,7 +16,12 @@
   const { React } = SDK;
   const h = React.createElement;
   const { useState, useEffect, useCallback } = SDK.hooks;
-  const { fetchJSON, cn } = SDK;
+  const { fetchJSON } = SDK;
+  const { cn, timeAgo } = SDK.utils || {};
+  // Fallback defensivo: hosts viejos sin utils exponen cn como identity.
+  const cx = typeof cn === "function" ? cn : function () {
+    return Array.prototype.slice.call(arguments).filter(Boolean).join(" ");
+  };
 
   const OUTCOME_STYLES = {
     dressed: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
@@ -29,7 +34,7 @@
 
   const Badge = function (outcome) {
     return h("span", {
-      className: cn(
+      className: cx(
         "inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-mono",
         outcomeClass(outcome),
       ),
@@ -40,7 +45,7 @@
     return h("div", { className: "flex min-w-0 flex-1 flex-col gap-1" },
       h("div", { className: "text-[11px] font-semibold uppercase tracking-wider text-zinc-500" }, label),
       h("pre", {
-        className: cn(
+        className: cx(
           "max-h-[420px] overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-800 bg-zinc-950 p-3 text-[12.5px] leading-relaxed",
           mono ? "font-mono" : "font-sans",
         ),
@@ -54,7 +59,7 @@
     return h("button", {
       key: (entry.ts || "") + (entry.user_message || "").slice(0, 20),
       onClick: function () { onSelect(entry); },
-      className: cn(
+      className: cx(
         "w-full border-b border-zinc-800/60 px-3 py-2 text-left hover:bg-zinc-900",
         isSel && "bg-zinc-900",
       ),
