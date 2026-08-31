@@ -11,6 +11,7 @@ tocar. El system prompt es advisory; los gates son duros.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -404,6 +405,75 @@ def _presenter_turn_snapshot() -> Dict[str, Any]:
         return {}
 
 
+# =============================================================================
+# F5.8: registro del par raw/vestido (datasource del visor dashboard).
+# =============================================================================
+
+# Cap del JSONL: el registro es para INSPECCIÓN del par, no un archivo de
+# historia eterna. 500 turnos ≈ meses de uso real y mantiene el archivo
+# por debajo de unos pocos MB.
+_PAIR_RECORD_MAX = 500
+_PAIR_RECORD_NAME = "presenter_pairs.jsonl"
+
+
+def _pair_record_path() -> Optional[Path]:
+    """HERMES_HOME/presenter_pairs.jsonl, o None si HERMES_HOME no resuelve."""
+    try:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / _PAIR_RECORD_NAME
+    except Exception:  # pragma: no cover - defensivo
+        return None
+
+
+def _presenter_record_pair(
+    raw: str,
+    dressed: str,
+    user_message: str = "",
+    tool_calls: int = 0,
+    failopen_reason: Optional[str] = None,
+) -> None:
+    """Append del par (raw, dressed) al JSONL bounded de HERMES_HOME.
+
+    El core NO persiste el vestido (persist-then-transform: transcript
+    crudo por diseño) — este registro es el único lugar donde el par
+    completo vive, y es lo que el visor worker/presenter consume. Fail-open
+    total: un disco roto jamás rompe el turno.
+
+    Formato por línea: {ts, session, outcome, raw, dressed, user_message,
+    tool_calls}. outcome = "dressed" | "failopen:<razón>" | "raw" (no
+    vestido por routing).
+    """
+    try:
+        from datetime import datetime, timezone
+        path = _pair_record_path()
+        if path is None:
+            return
+        outcome = "dressed" if failopen_reason is None else f"failopen:{failopen_reason}"
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "outcome": outcome,
+            "raw": raw,
+            "dressed": dressed,
+            "user_message": user_message,
+            "tool_calls": tool_calls,
+        }
+        lines = []
+        if path.exists():
+            try:
+                lines = [
+                    ln for ln in path.read_text(encoding="utf-8").splitlines()
+                    if ln.strip()
+                ]
+            except Exception:
+                lines = []  # archivo corrupto: se re-arma desde cero
+        lines.append(json.dumps(entry, ensure_ascii=False))
+        if len(lines) > _PAIR_RECORD_MAX:
+            lines = lines[-_PAIR_RECORD_MAX:]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:  # pragma: no cover - registro jamás rompe el turno
+        logger.debug("presenter: record_pair falló (ignorado)", exc_info=True)
+
+
 def _on_transform_llm_output(
     response_text: str = "",
     session_id: str = "",
@@ -450,16 +520,60 @@ def _on_transform_llm_output(
     if p._llm is None:
         logger.info("presenter: no viste (ctx.llm no disponible)")
         return None
+    # F5.8: alimentar la memoria del vestidor desde gate_state (buffer
+    # curado — última vestida + mensaje del usuario de este turno).
+    presenter_mod._MEMORY_STATE = {
+        "last_dressed": gate.get("presenter_last_dressed"),
+        "user_message": gate.get("presenter_user_message"),
+    }
+    # El hook consume la memoria: registrar el par ANTES de resetear.
+    raw_text = response_text
+    tool_calls = gate.get("presenter_tool_calls", 0)
+    user_msg = gate.get("presenter_user_message") or ""
+    failopen_reason = {"_": None}
+
+    def _record(reason: Optional[str]) -> None:
+        _presenter_record_pair(
+            raw=raw_text,
+            dressed=dressed_result[0] if dressed_result else raw_text,
+            user_message=user_msg,
+            tool_calls=tool_calls,
+            failopen_reason=reason,
+        )
+
+    dressed_result: list[str] = []
+    _failopen_event: list[str] = []
+    real_on_event = _presenter_on_event
+
+    def _on_event_and_record(event: str) -> None:
+        real_on_event(event)
+        if event == "dressed":
+            dressed_result.append(dressed_out[0])
+        elif event.startswith("failopen:"):
+            _failopen_event.append(event.split(":", 1)[1])
+
+    dressed_out: list[str] = []
+    p._on_event = _on_event_and_record
     dressed = p.present(response_text, ctx_snapshot=_presenter_turn_snapshot())
     # present() es fail-open (devuelve el original ante cualquier fallo):
     # solo reportamos transformación si realmente cambió algo. El contador
     # dressed/fail-open lo lleva on_event (telemetría F5.3).
     if dressed and dressed.strip() and dressed.strip() != response_text.strip():
+        dressed_out.append(dressed)
         logger.info(
             "arnes-gates: presenter vistio la entrega (turno con %d tools)",
             gate.get("presenter_tool_calls", 0),
         )
+        _record(None)
+        # F5.8: la vestida queda como memoria para la próxima, y el
+        # user_message de este turno ya fue atendido por el vestidor.
+        gate["presenter_last_dressed"] = dressed
+        gate["presenter_user_message"] = None
         return dressed
+    # No vestido (fail-open del vestidor o idempotente): registrar crudo
+    # con la razón si la hay — el visor necesita mostrar por qué.
+    reason = _failopen_event[0] if _failopen_event else "raw"
+    _record(None if reason == "raw" else reason)
     return None
 
 
@@ -1001,6 +1115,12 @@ def _on_pre_api_request(
         gate["breaker_turn_id"] = turn_id
         # Fase 5: turno nuevo = latch del presenter en cero (patron D7).
         gate["presenter_tool_calls"] = 0
+        # F5.8: el mensaje del usuario de ESTE turno, para la memoria del
+        # vestidor (el presenter no ve la conversación — ve este buffer).
+        # Primera llamada del turno manda: en retries/tool-loops el core
+        # re-pasa user_message pero el mensaje original ya quedó.
+        if user_message:
+            gate["presenter_user_message"] = user_message
         # F5.3: el cierre limpio es una propiedad del TURNO, no acumulativa
         # (done sí lo es — sesion—; por eso este latch aparte).
         gate["presenter_finish_clean"] = False

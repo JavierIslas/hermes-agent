@@ -34,6 +34,13 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+# F5.8: memoria del vestidor — buffer propio y curado (NO la conversación).
+# Lo llena __init__ desde gate_state antes de cada vestida: última vestida +
+# último mensaje del usuario. None/{} = sin memoria (primera vestida).
+# Vivir acá (y no en gate_state) mantiene presenter.py autocontenido y
+# testeable sin el plugin entero.
+_MEMORY_STATE: Optional[dict] = None
+
 # Timeout (segundos) para la llamada de vestir. Dogfood 2026-08-19 (D13): con
 # glm-5.3, 20s alcanzaba solo para outputs cortos (~80 chars vistieron en
 # ~8s); los turnos reales de coding (~2K chars) timeoutaban y fail-openeaban
@@ -411,12 +418,18 @@ class Presenter:
 
 
 def _build_dress_output_prompt(worker_output: str, ctx_snapshot: Optional[dict] = None) -> str:
-    """Arma el prompt de vestir: contexto del turno (hechos) + texto.
+    """Arma el prompt de vestir: memoria + contexto del turno (hechos) + texto.
 
     El bloque '# Contexto del turno' va ANTES del '# Texto a vestir':
     el stub echo del E2E extrae tras ese marcador final, y los vestidores
     reales leen los hechos primero y la entrega despues.
+
+    F5.8: '# Memoria del vestidor' (si existe) va PRIMERO — la última
+    vestida propia y el mensaje del usuario desde entonces. Continuidad
+    de voz y correcciones de tono sin convertir al vestidor en
+    interlocutor: el buffer es curado, no la conversación.
     """
+    global _MEMORY_STATE
     snapshot_block = ""
     if ctx_snapshot:
         lines = []
@@ -435,8 +448,30 @@ def _build_dress_output_prompt(worker_output: str, ctx_snapshot: Optional[dict] 
                 "# Contexto del turno (hechos verificados por el arnés; "
                 "podés mencionarlos, no inventar otros)\n" + "\n".join(lines) + "\n\n"
             )
+    memory_block = ""
+    last_dressed = _MEMORY_STATE.get("last_dressed") if _MEMORY_STATE else None
+    user_msg = _MEMORY_STATE.get("user_message") if _MEMORY_STATE else None
+    if last_dressed or user_msg:
+        lines = []
+        if last_dressed:
+            lines.append("- Tu última entrega vestida: " + last_dressed)
+        if user_msg:
+            lines.append(
+                "- Lo que el usuario escribió desde entonces (el worker ya lo "
+                "atendió; te lo damos para tu tono, no para responderlo): "
+                + user_msg)
+        memory_block = (
+            "# Memoria del vestidor\n"
+            "Mantené tu voz consistente con tu última entrega. Si el usuario "
+            "corrigió el tono, la corrección manda sobre tu estilo.\n"
+            + "\n".join(lines) + "\n\n"
+        )
+        # La memoria es de UNA vestida: consumida aquí, no sangra a la
+        # próxima (la próxima la siembra el hook desde gate_state).
+        _MEMORY_STATE = None
     return _DRESS_OUTPUT_PROMPT.format(
-        worker_output=worker_output, snapshot_block=snapshot_block)
+        worker_output=worker_output, snapshot_block=snapshot_block,
+        memory_block=memory_block)
 
 
 _DRESS_OUTPUT_PROMPT = """\
@@ -453,7 +488,7 @@ REGLAS:
 - No menciones al worker, ni que hubo una transformacion: eres tu hablando.
 - Responde con el texto vestido y nada mas (sin preambulos ni cierre).
 
-{snapshot_block}# Texto a vestir
+{memory_block}{snapshot_block}# Texto a vestir
 {worker_output}
 """
 
