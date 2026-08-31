@@ -496,9 +496,10 @@ def _on_transform_llm_output(
                 _presenter_mode(), _worker_mode_active(), platform or "?",
             )
         return None
-    if gate.get("presenter_tool_calls", 0) <= 0:
-        logger.info("presenter: no viste (tools=0: charla pura no se viste)")
-        return None  # (d) charla pura: no se viste
+    # 2026-08-31 (contrato del par): el usuario NUNCA habla con el worker —
+    # habla con el presenter. Toda entrega se viste, con o sin tools. El
+    # salto "tools=0 = charla pura" rompía el contrato (la primera respuesta
+    # de una conversación llegaba cruda por no tener tools aún).
     if _presenter_mode() == "on_finish" and not gate.get("presenter_finish_clean"):
         logger.info(
             "presenter: no viste (on_finish: turno intermedio — latch "

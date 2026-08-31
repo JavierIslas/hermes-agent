@@ -418,8 +418,12 @@ class TestRouting:
             _presenter_off(arnes_plugin)
         assert result is None
 
-    def test_turno_sin_tools_no_transforma(self, arnes_plugin, tmp_path, monkeypatch):
-        """(d) charla pura (tools=0): solo se viste el cierre de tarea."""
+    def test_turno_sin_tools_TAMBIEN_se_viste(self, arnes_plugin, tmp_path, monkeypatch):
+        """(d-revisada 2026-08-31): en el par worker/presenter el usuario
+        NUNCA habla con el worker — habla con el presenter. Toda entrega
+        se viste, existan o no tools de por medio. El salto 'tools=0 =
+        charla pura' rompía el contrato del par (la primera respuesta de
+        una conversación llegaba cruda por no tener tools aún)."""
         _reset_gate(arnes_plugin)
         _presenter_on(arnes_plugin, monkeypatch, tmp_path, tool_calls=0)
         try:
@@ -428,7 +432,7 @@ class TestRouting:
                 platform="telegram")
         finally:
             _presenter_off(arnes_plugin)
-        assert result is None
+        assert result == "vestido"  # default del stub de _presenter_on
 
     def test_sin_ctx_no_transforma(self, arnes_plugin, tmp_path, monkeypatch):
         """Sin _PRESENTER_CTX (plugin sin register real): None, sin tronar."""

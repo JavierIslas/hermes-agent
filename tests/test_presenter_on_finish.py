@@ -383,15 +383,22 @@ class TestRoutingObservabilidad:
             arnes_plugin._PRESENTER_CTX = None
         assert "no viste" not in log
 
-    def test_rechazo_sin_tools_deja_log(self, arnes_plugin, monkeypatch, tmp_path, caplog):
+    def test_rechazo_sin_tools_ya_no_existe_pero_routing_deja_log(self, arnes_plugin, monkeypatch, tmp_path, caplog):
+        """2026-08-31: sin tools TAMBIÉN se viste (contrato del par). El log
+        de rechazo tools=0 murió con ese cambio; este test verifica que el
+        turno sin tools pasa por el vestidor y viste."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "SOUL.md").write_text(
+            "# Identity\nSoy la voz del escenario.", encoding="utf-8")
         arnes_plugin._PRESENTER_CTX = SimpleNamespace(
-            get_config=lambda key, default=None: "on" if key == "presenter_mode" else default)
+            get_config=lambda key, default=None: "on" if key == "presenter_mode" else default,
+            llm=_StubLlm(reply="vestido ok"))
         monkeypatch.setattr(arnes_plugin, "_worker_mode_active", lambda: True)
         try:
             log = self._run(arnes_plugin, caplog, presenter_tool_calls=0)
         finally:
             arnes_plugin._PRESENTER_CTX = None
-        assert "presenter: no viste (tools=0" in log
+        assert "no viste" not in log
 
     def test_rechazo_turno_intermedio_deja_log(self, arnes_plugin, monkeypatch, tmp_path, caplog):
         arnes_plugin._PRESENTER_CTX = SimpleNamespace(
