@@ -161,6 +161,33 @@ class TestPairRecord:
         arnes_plugin._presenter_record_pair(
             raw="r", dressed="d", user_message="", tool_calls=0)
 
+    def test_hook_vestida_registra_el_PAR_no_el_crudo_duplicado(self, arnes_plugin, tmp_path, monkeypatch):
+        """REGRESIÓN 2026-09-01 (reporte del usuario vía viewer): 11/12
+        entradas del JSONL con outcome=dressed y raw == dressed byte
+        idénticos. Causa: el closure _on_event_and_record leía
+        dressed_out[0] cuando el evento 'dressed' dispara DENTRO de
+        present() — antes de que el hook appendee el texto vestido a
+        dressed_out. IndexError tragada por _emit ('telemetría jamás
+        rompe') → dressed_result vacía → el registro caía al fallback
+        grabando raw en ambos campos. La entrega al usuario era correcta;
+        el REGISTRO mentía. Este test ejercita el hook completo (la vía
+        de producción) y exige que el JSONL capture el par real."""
+        _reset_gate(arnes_plugin)
+        _hook_on(arnes_plugin, monkeypatch, tmp_path,
+                 reply="Vestida real: el fix quedó en /tmp/x.py, criatura.",
+                 user_message="arreglá el registro")
+        raw = "Fix en /tmp/x.py"
+        out = arnes_plugin._on_transform_llm_output(
+            response_text=raw, session_id="s", platform="telegram")
+        assert out is not None and out != raw  # la entrega vistió
+        f = tmp_path / "presenter_pairs.jsonl"
+        assert f.exists(), "el hook debe registrar el par"
+        entry = json.loads(f.read_text(encoding="utf-8").strip().splitlines()[-1])
+        assert entry["outcome"] == "dressed"
+        assert entry["raw"] == raw
+        assert entry["dressed"] == out  # EL PAR REAL, no raw duplicado
+        assert entry["dressed"] != entry["raw"]
+
 
 # ============================================================================
 # 3. Memoria en el prompt del vestidor (via el hook, como en produccion)

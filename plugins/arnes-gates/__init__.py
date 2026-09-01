@@ -531,41 +531,38 @@ def _on_transform_llm_output(
     raw_text = response_text
     tool_calls = gate.get("presenter_tool_calls", 0)
     user_msg = gate.get("presenter_user_message") or ""
-    failopen_reason = {"_": None}
+    failopen_reason: list[str] = []  # la llena _on_event (dentro de present)
 
-    def _record(reason: Optional[str]) -> None:
+    def _record(dressed_text: Optional[str], reason: Optional[str]) -> None:
         _presenter_record_pair(
             raw=raw_text,
-            dressed=dressed_result[0] if dressed_result else raw_text,
+            dressed=dressed_text if dressed_text is not None else raw_text,
             user_message=user_msg,
             tool_calls=tool_calls,
             failopen_reason=reason,
         )
 
-    dressed_result: list[str] = []
-    _failopen_event: list[str] = []
     real_on_event = _presenter_on_event
 
     def _on_event_and_record(event: str) -> None:
         real_on_event(event)
-        if event == "dressed":
-            dressed_result.append(dressed_out[0])
-        elif event.startswith("failopen:"):
-            _failopen_event.append(event.split(":", 1)[1])
+        if event.startswith("failopen:"):
+            failopen_reason.append(event.split(":", 1)[1])
 
-    dressed_out: list[str] = []
     p._on_event = _on_event_and_record
     dressed = p.present(response_text, ctx_snapshot=_presenter_turn_snapshot())
     # present() es fail-open (devuelve el original ante cualquier fallo):
     # solo reportamos transformación si realmente cambió algo. El contador
     # dressed/fail-open lo lleva on_event (telemetría F5.3).
     if dressed and dressed.strip() and dressed.strip() != response_text.strip():
-        dressed_out.append(dressed)
         logger.info(
             "arnes-gates: presenter vistio la entrega (turno con %d tools)",
             gate.get("presenter_tool_calls", 0),
         )
-        _record(None)
+        # El retorno de present() ES el texto vestido: registrar el par
+        # real directamente (regresión 2026-09-01: capturarlo vía evento
+        # con un closure leía dressed_out antes de que existiera).
+        _record(dressed, None)
         # F5.8: la vestida queda como memoria para la próxima, y el
         # user_message de este turno ya fue atendido por el vestidor.
         gate["presenter_last_dressed"] = dressed
@@ -573,8 +570,8 @@ def _on_transform_llm_output(
         return dressed
     # No vestido (fail-open del vestidor o idempotente): registrar crudo
     # con la razón si la hay — el visor necesita mostrar por qué.
-    reason = _failopen_event[0] if _failopen_event else "raw"
-    _record(None if reason == "raw" else reason)
+    reason = failopen_reason[0] if failopen_reason else "raw"
+    _record(None, None if reason == "raw" else reason)
     return None
 
 
