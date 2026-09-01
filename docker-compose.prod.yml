@@ -55,6 +55,10 @@ services:
       - gateway
     volumes:
       - ~/.hermes:/opt/data
+      # Mismo fix DNS que el gateway: sin este mount el dashboard queda con
+      # la copia congelada de resolv.conf que Docker tomó al crearlo y muere
+      # al cambiar de red (ver docker-compose.yml del gateway).
+      - ~/.hermes/cache/resolv-stub.conf:/etc/resolv.conf:ro
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
