@@ -99,11 +99,12 @@ apps/desktop/src/**/*.d.ts
 !apps/desktop/src/global.d.ts
 !apps/desktop/src/vite-env.d.ts
 
-# Repo-root build/debug artifacts that must never be committed
+# Build/debug artifacts that must never be committed
 /log.txt
 /sqlite_leak_fix.png
 /*.png.bak
-/default.tar.gz
+*.tar.gz
+*.tgz
 apps/shared/src/**/*.js
 apps/shared/src/**/*.js.map
 apps/shared/src/**/*.d.ts
@@ -216,3 +217,7 @@ refs/
 # Local full-suite log (scripts/run_tests.sh output dump, regenerated per run —
 # see arnes-gates D10 notes; 687KB of runner noise, never an artifact)
 suite_full.log
+.skills_prompt_snapshot.json
+
+# Disposable profile created by scripts/probe_active_session_exclusivity.py
+.probe-home/
