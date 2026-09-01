@@ -74,6 +74,10 @@ services:
       - gateway
     volumes:
       - ~/.hermes:/opt/data
+      # Same DNS fix as the gateway: without this mount the dashboard keeps
+      # Docker's frozen resolv.conf copy and loses name resolution (its chat
+      # tab can't reach any provider endpoint). See gateway service notes.
+      - ~/.hermes/cache/resolv-stub.conf:/etc/resolv.conf:ro
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
