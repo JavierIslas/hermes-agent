@@ -48,6 +48,49 @@ _MEMORY_STATE: Optional[dict] = None
 # Override via settings: presenter_timeout_s. Al vencer, fail-open al crudo.
 _DEFAULT_DRESS_TIMEOUT_S = 60.0
 
+# Presupuesto MAXIMO de wall-clock que el core le da a UN callback de hook
+# (hermes_cli/plugins.py: _HOOK_CALLBACK_TIMEOUT_SECS, override por config
+# ``plugins.hook_callback_timeout``). El vestidor corre DENTRO de ese
+# presupuesto: si su propio timeout lo excede, el dispatcher abandona el
+# hilo a los 30s, entrega el texto CRUDO al usuario... y el vestidor
+# zombie completa igual 15-50s despues, loguea "vistio la entrega" y
+# registra outcome=dressed en el JSONL. Registro verde, usuario crudo —
+# 33 timeouts asi en agent.log* entre 2026-08-21 y 2026-09-02.
+#
+# Clamp: el timeout efectivo es min(presenter_timeout_s, presupuesto del
+# dispatcher - margen). Asi el vestidor fail-openea EL MISMO (timeout
+# honesto, contadores correctos) antes de ser abandonado. Best-effort: si
+# la config del dispatcher no se puede leer, se asume el default (30s).
+_HOOK_BUDGET_MARGIN_S = 2.0
+_DEFAULT_HOOK_BUDGET_S = 30.0
+
+
+def _hook_dispatcher_budget_s() -> float:
+    """Presupuesto del dispatcher de hooks (plugins.hook_callback_timeout).
+
+    Lee la misma config que hermes_cli.plugins._resolve_hook_callback_timeout
+    (loader cacheado por mtime). Semantica espejada del core:
+    - ausente/ilegible -> default documentado (30s)
+    - < 0 -> el core lo trata como default (warn + 30s)
+    - == 0 -> modo sync, SIN timeout del dispatcher (0.0: el clamp se
+      desactiva y gobierna solo presenter_timeout_s)
+    Best-effort: cualquier fallo devuelve el default (30s).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        plugins_cfg = (load_config_readonly() or {}).get("plugins")
+        if isinstance(plugins_cfg, dict):
+            raw = plugins_cfg.get("hook_callback_timeout")
+            if raw is not None:
+                val = float(raw)
+                if val < 0:
+                    return _DEFAULT_HOOK_BUDGET_S
+                return val
+    except Exception:
+        pass
+    return _DEFAULT_HOOK_BUDGET_S
+
 _RE_URL = re.compile(r"https?://\S+")
 _RE_NUM = re.compile(r"\d+(?:\.\d+)?")
 # F5.5 (dogfood 2026-08-21): diffstats (+462/-15) y ratios (272/272) NO son
@@ -300,9 +343,21 @@ class Presenter:
     # -- settings (F5.2) -----------------------------------------------------
 
     def _timeout_s(self) -> float:
-        return _coerce_timeout(
+        """Timeout efectivo de vestir, clampado al presupuesto del dispatcher.
+
+        El hook transform_llm_output corre bajo plugins.hook_callback_timeout
+        (default 30s): si la llamada LLM puede durar mas que ese presupuesto,
+        el dispatcher abandona el hilo y entrega crudo (fail-open invisible,
+        con registro zombie). Clampamos para que NUESTRO timeout venza
+        primero y el fail-open sea honesto.
+        """
+        requested = _coerce_timeout(
             self._get_config("presenter_timeout_s", _DEFAULT_DRESS_TIMEOUT_S)
         )
+        budget = _hook_dispatcher_budget_s() - _HOOK_BUDGET_MARGIN_S
+        if budget <= 0:
+            return requested
+        return min(requested, budget)
 
     def _model_kw(self) -> dict[str, str]:
         """presenter_model como kwargs provider= + model= SEPARADOS.
