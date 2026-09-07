@@ -82,8 +82,8 @@ class TestWorkerIdentitySlot:
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
-            patch("run_agent.load_soul_md", return_value="SOS MARIA BRINK BLOOD LEGION"),
-            patch("run_agent.load_worker_md", return_value="Sos un agente de coding. Crudo."),
+            patch("agent.prompt_builder.load_soul_md", return_value="SOS MARIA BRINK BLOOD LEGION"),
+            patch("agent.prompt_builder.load_worker_md", return_value="Sos un agente de coding. Crudo."),
         ):
             agent = AIAgent(
                 api_key="test-k...7890",
@@ -104,8 +104,8 @@ class TestWorkerIdentitySlot:
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
-            patch("run_agent.load_soul_md", return_value="SOS MARIA BRINK BLOOD LEGION"),
-            patch("run_agent.load_worker_md", return_value="Sos un agente de coding. Crudo."),
+            patch("agent.prompt_builder.load_soul_md", return_value="SOS MARIA BRINK BLOOD LEGION"),
+            patch("agent.prompt_builder.load_worker_md", return_value="Sos un agente de coding. Crudo."),
         ):
             agent = AIAgent(
                 api_key="test-k...7890",
@@ -125,7 +125,7 @@ class TestWorkerIdentitySlot:
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
-            patch("run_agent.load_soul_md", return_value="SOS MARIA BRINK BLOOD LEGION"),
+            patch("agent.prompt_builder.load_soul_md", return_value="SOS MARIA BRINK BLOOD LEGION"),
             patch("run_agent.load_worker_md", return_value=None),
         ):
             agent = AIAgent(

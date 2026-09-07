@@ -29,6 +29,43 @@ This is the shape that covers the workloads `delegate_task` can't:
 
 For the full design rationale, comparative analysis against Cline Kanban / Paperclip / NanoClaw / Google Gemini Enterprise, and the eight canonical collaboration patterns, see `docs/hermes-kanban-v1-spec.pdf` in the repository.
 
+## PR completion contracts
+
+Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact
+`https://github.com/OWNER/REPO/pull/123` URL for existing work). `kanban_create`
+accepts the same `completion_contract`. Use `local-only` for intentionally local
+work; existing and undeclared cards retain that default. Prose URLs are not policy.
+
+After publishing, pass `metadata.published_pr` to completion. The first matching
+URL binds the card permanently; retries cannot substitute a green sibling PR.
+CLI `show --json` and `kanban_show` expose the persisted contract.
+
+The shared `complete_task` boundary covers worker tools, CLI, review approval and
+dashboard completion. It reads classic branch protection and active ruleset
+required contexts, paginates exact-head check runs and legacy statuses, then
+re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
+required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
+neutral **required** evidence cannot complete the card. Neither can zero-run
+acceptance, unreadable policy or GitHub API failures. A repository without required
+checks needs a local-only contract. `gh` must be authenticated with read access to
+the repository's checks and rules; no remote writes are performed by this gate.
+
+Rejection retains the active card and workspace. Durable `pr_acceptance` events
+store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
+instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
+infrastructure checks or wait, then retry completion. Use `kanban_block` when
+human action is needed. Generic GitHub `failure` cannot establish whether a test
+or artifact upload failed; inspect its retained URL. Explicit infrastructure
+conclusions and API failures are classified separately. No extra worker is spawned.
+
+Receipt persistence and the terminal write recheck run/status/contract ownership
+under one SQLite lock: a reclaimed worker cannot complete or attach acceptance to
+the new run. The final GitHub read is a completion-time snapshot, not a distributed
+transaction or a continuous post-completion monitor. This is a single-user lifecycle
+guard, not OS isolation against arbitrary direct database writes. GitHub Enterprise
+is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
+verification and publication alone are not remote acceptance.
+
 ## Kanban vs. `delegate_task`
 
 They look similar; they are not the same primitive.
@@ -512,7 +549,7 @@ def register(ctx):
 
 ### Goal-mode cards (`--goal`)
 
-By default each worker gets **one shot** at its card — do the work, call `kanban_complete`/`kanban_block`, exit. Pass `--goal` (CLI) or `goal_mode=True` (the `kanban_create` tool / dashboard) to instead run that worker in a **goal loop**, the same Ralph-style engine behind the `/goal` slash command: after every turn an auxiliary judge checks the worker's output against the card's title + body (treated as the acceptance criteria), and if the work isn't done — and the turn budget remains — the worker keeps going **in the same session** until the judge agrees, the worker terminates the task itself, or the budget runs out (which **blocks** the card for human review rather than exiting silently).
+By default each worker gets **one shot** at its card — do the work, call `kanban_complete`/`kanban_block`, exit. Pass `--goal` (CLI) or `goal_mode=True` (the `kanban_create` tool / dashboard) to instead run that worker in a **goal loop**, the same Ralph-style engine behind the `/goal` slash command: after every turn an auxiliary judge checks the worker's output against the card's title + body (treated as the acceptance criteria), and if the work isn't done — and the turn budget remains — the worker keeps going **in the same session** until the judge agrees, the worker terminates the task itself, or the budget runs out (which **blocks** the card for human review rather than exiting silently). If the judge rules the goal **unachievable** as written, the card is blocked immediately with the judge's reason — an impossible card is never marked done, and `kanban complete` / `kanban request-review` on such a card are rejected with a pointer to `kanban block` or re-scoping.
 
 ```bash
 hermes kanban create "Translate the docs site to French" \
@@ -614,7 +651,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
-| `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
+| `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
 
 And the two auxiliary LLM slots:
 
@@ -887,7 +924,7 @@ bot> ✓ t_9fc1a3 completed by transcriber
      transcribed 42 minutes, saved to podcast/2026-05-04.md
 ```
 
-Subscriptions survive a task reaching `done` — completion is reversible (a reviewer or controller can reopen a done task), so the origin session keeps getting notified through reopen cycles. They auto-remove on `archived` (the irreversible end state). On boards that never archive, a GC sweep purges subscriptions for tasks that have sat in `done` with no new activity for `kanban.done_sub_retention_days` days (default 30; set 0 to disable), so stale rows don't accumulate forever. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
+Subscriptions survive a task reaching `done` — completion is reversible (a reviewer or controller can reopen a done task), so the origin session keeps getting notified through reopen cycles. They auto-remove on `archived` (the irreversible end state). On boards that never archive, a GC sweep purges subscriptions for tasks that have sat in `done` or `blocked` with no new activity for `kanban.done_sub_retention_days` days (default 30; set 0 to disable), so stale rows don't accumulate forever. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
 
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
 
