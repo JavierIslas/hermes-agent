@@ -334,6 +334,12 @@ class TestFactualIntegrity:
 class TestSettings:
     def _mk(self, arnes_plugin, tmp_path, monkeypatch, settings, reply="vestido ok"):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Hermeticidad (2026-09-02): el timeout efectivo se clampaea al
+        # presupuesto del dispatcher (leido de la config REAL del proceso
+        # de test si existe). Lo fijamos para que los asserts no dependan
+        # del config.yaml de la maquina donde corren los tests.
+        monkeypatch.setattr(
+            arnes_plugin.presenter, "_hook_dispatcher_budget_s", lambda: 30.0)
         _mk_soul(tmp_path)
         llm = _StubLlm(reply=reply)
         p = arnes_plugin.presenter.Presenter(
@@ -348,17 +354,20 @@ class TestSettings:
         assert llm.calls[0]["kw"]["timeout"] == 5.0
 
     def test_timeout_default_60(self, arnes_plugin, tmp_path, monkeypatch):
-        """Sin setting: 60.0 (D13)."""
+        """Sin setting + budget 30: el default 60 se CLAMPEA a 28 (30 - 2 de
+        margen). El clamp (2026-09-02) existe para que el fail-open lo
+        gestione el vestidor (timeout honesto, contadores correctos) y no
+        el dispatcher del core (hilo abandonado + registro zombie verde)."""
         p, llm = self._mk(arnes_plugin, tmp_path, monkeypatch, {})
         p.present("raw")
-        assert llm.calls[0]["kw"]["timeout"] == 60.0
+        assert llm.calls[0]["kw"]["timeout"] == 28.0
 
     def test_timeout_basura_cae_a_default(self, arnes_plugin, tmp_path, monkeypatch):
         """Valor no numerico: default honesto, sin excepcion."""
         p, llm = self._mk(arnes_plugin, tmp_path, monkeypatch,
                           {"presenter_timeout_s": "lento"})
         p.present("raw")
-        assert llm.calls[0]["kw"]["timeout"] == 60.0
+        assert llm.calls[0]["kw"]["timeout"] == 28.0
 
     def test_model_parametrizado(self, arnes_plugin, tmp_path, monkeypatch):
         """presenter_model "provider/model" viaja SEPARADO: provider= y model=
@@ -703,3 +712,78 @@ class TestRegistro:
         s = arnes_plugin.gate_state.get()
         assert "presenter_tool_calls" in s
         assert "presenter_turn_id" in s
+
+
+class TestHookBudgetClamp:
+    """Clamp del timeout del vestidor al presupuesto del dispatcher
+    (2026-09-02). Bug: presenter_timeout_s=180 > hook_callback_timeout=30
+    -> el dispatcher abandonaba el hilo a los 30s (entrega CRUDO) mientras
+    el vestidor zombie completaba y registraba outcome=dressed. Registro
+    verde, usuario crudo: 33 timeouts en agent.log* (08-21..09-02)."""
+
+    def _mk(self, arnes_plugin, tmp_path, monkeypatch, budget):
+        monkeypatch.setattr(
+            arnes_plugin.presenter, "_hook_dispatcher_budget_s", lambda: budget)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="vestido ok")
+        p = arnes_plugin.presenter.Presenter(
+            llm, get_config=lambda key, default=None: default)
+        return p, llm
+
+    def test_budget_default_30_clampea(self, arnes_plugin, tmp_path, monkeypatch):
+        """Sin config del dispatcher: budget 30 -> timeout 28 (30-2)."""
+        p, llm = self._mk(arnes_plugin, tmp_path, monkeypatch, budget=30.0)
+        p.present("raw")
+        assert llm.calls[0]["kw"]["timeout"] == 28.0
+
+    def test_budget_120_da_aire(self, arnes_plugin, tmp_path, monkeypatch):
+        """Budget 120 (config nueva) + presenter_timeout_s 90: el clamp no
+        aplica (90 < 118), el setting gobierna."""
+        monkeypatch.setattr(
+            arnes_plugin.presenter, "_hook_dispatcher_budget_s", lambda: 120.0)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="vestido ok")
+        p = arnes_plugin.presenter.Presenter(
+            llm, get_config=lambda key, default=None:
+                {"presenter_timeout_s": 90}.get(key, default))
+        p.present("raw")
+        assert llm.calls[0]["kw"]["timeout"] == 90.0
+
+    def test_budget_cero_desactiva_clamp(self, arnes_plugin, tmp_path, monkeypatch):
+        """hook_callback_timeout=0 = modo sync del core (sin abandono): el
+        clamp se desactiva y gobierna presenter_timeout_s solo."""
+        monkeypatch.setattr(
+            arnes_plugin.presenter, "_hook_dispatcher_budget_s", lambda: 0.0)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _mk_soul(tmp_path)
+        llm = _StubLlm(reply="vestido ok")
+        p = arnes_plugin.presenter.Presenter(
+            llm, get_config=lambda key, default=None: default)
+        p.present("raw")
+        assert llm.calls[0]["kw"]["timeout"] == 60.0
+
+    def test_lector_budget_espeja_core(self, arnes_plugin, monkeypatch):
+        """El lector espeja _resolve_hook_callback_timeout: <0 -> default
+        30; ==0 -> 0.0 (sync); >0 -> valor; ausente -> 30; ilegible -> 30."""
+        pres = arnes_plugin.presenter
+        import hermes_cli.config as hc
+
+        def _with_cfg(raw):
+            def fake_load():
+                return {"plugins": {"hook_callback_timeout": raw}} if raw is not None else {"plugins": {}}
+            return fake_load
+
+        monkeypatch.setattr(hc, "load_config_readonly", _with_cfg(120))
+        assert pres._hook_dispatcher_budget_s() == 120.0
+        monkeypatch.setattr(hc, "load_config_readonly", _with_cfg(0))
+        assert pres._hook_dispatcher_budget_s() == 0.0
+        monkeypatch.setattr(hc, "load_config_readonly", _with_cfg(-5))
+        assert pres._hook_dispatcher_budget_s() == 30.0
+        monkeypatch.setattr(hc, "load_config_readonly", _with_cfg(None))
+        assert pres._hook_dispatcher_budget_s() == 30.0
+        monkeypatch.setattr(
+            hc, "load_config_readonly",
+            lambda: (_ for _ in ()).throw(RuntimeError("sin config")))
+        assert pres._hook_dispatcher_budget_s() == 30.0
