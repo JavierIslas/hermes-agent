@@ -1846,8 +1846,9 @@ export const ja = defineLocale({
     title: 'スケジュール済みジョブ',
     count: count => `${count} 件のジョブ`,
     modelImpact: {
-      title: 'スケジュール済みジョブの確認が必要です',
-      message: count => `モデル設定を確認するまで、${count} 件のスケジュール済みジョブがスキップされます。`,
+      title: 'スケジュール済みジョブは元のモデルで実行されます',
+      message: count =>
+        `ピン留めされていない ${count} 件のスケジュール済みジョブは、作成時のモデルで引き続き実行されます。移行するにはピン留めするか cron.model を設定してください。`,
       detailMore: (names, remaining) => `${names}、ほか ${remaining} 件`,
       review: 'スケジュール済みジョブを確認',
       saveFailed: 'Hermes はモデルの変更を保存しませんでした。',
@@ -2045,13 +2046,23 @@ export const ja = defineLocale({
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: 'ゲートウェイとプロファイル',
+      rename: 'グループ名を変更',
+      aliasLabel: '表示名',
+      aliasHint: '表示名のみ変更します。ゲートウェイ名とプロファイル名は変わりません。',
+      resetName: '名前をリセット',
+      moveUp: '上に移動',
+      moveDown: '下に移動',
+      reorder: 'グループを並べ替え',
+      actions: 'グループの操作'
+    },
     nav: {
       'new-session': '新しいセッション',
       skills: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      cron: 'スケジュール済みジョブ',
-      'session-import': 'セッションを取り込む'
+      cron: 'スケジュール済みジョブ'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',

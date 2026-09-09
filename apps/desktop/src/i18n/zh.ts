@@ -1117,6 +1117,10 @@ export const zh: Translations = {
       },
       cloudRefresh: '刷新',
       cloudConnect: '连接',
+      cloudSavedTitle: '已保存的云网关',
+      cloudSavedDesc: '使用已保存的网关，不更改默认网关。在下方登录以添加实例。在已保存的连接列表中管理名称和登录。',
+      cloudUseSaved: '使用网关',
+      cloudActive: '当前窗口正在使用',
       cloudConnecting: '正在连接…',
       cloudDiscoverFailed: '无法加载你的 Hermes Cloud 智能体',
       cloudConnectFailed: '无法连接到该智能体',
@@ -2336,8 +2340,9 @@ export const zh: Translations = {
     title: '定时任务',
     count: count => `${count} 个任务`,
     modelImpact: {
-      title: '定时任务需要检查',
-      message: count => `在您检查模型设置之前，${count} 个定时任务将被跳过。`,
+      title: '定时任务将继续使用原模型',
+      message: count =>
+        `${count} 个未固定的定时任务将继续使用创建时的模型运行。固定它们或设置 cron.model 以迁移。`,
       detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 个`,
       review: '检查定时任务',
       saveFailed: 'Hermes 未保存该模型更改。',
@@ -2533,13 +2538,23 @@ export const zh: Translations = {
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: '网关与配置',
+      rename: '重命名分组',
+      aliasLabel: '显示名称',
+      aliasHint: '仅更改显示名称；网关和配置档名称保持不变。',
+      resetName: '重置名称',
+      moveUp: '上移',
+      moveDown: '下移',
+      reorder: '调整分组顺序',
+      actions: '分组操作'
+    },
     nav: {
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物',
-      cron: '定时任务',
-      'session-import': '导入会话'
+      cron: '定时任务'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',
