@@ -39,6 +39,7 @@ SANDBOX_AVAILABLE = True
 # Tools allowed inside the sandbox; ∩ the session's enabled tools decides which stubs are generated.
 SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search", "web_extract", "read_file", "write_file", "search_files", "patch", "terminal",
+    "llm",
 ])
 
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
@@ -138,6 +139,9 @@ _TOOL_STUBS = {
     "terminal": ("command: str, timeout: int = None, workdir: str = None",
         '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
         '{"command": command, "timeout": timeout, "workdir": workdir}'),
+    "llm": ("prompt: str, system: str = '', max_tokens: int = None",
+        '"""One auxiliary LLM call, text -> text (semantic judgment on a slice). Returns dict with success/text/usage. Loop it over slices for bulk judgment; errors return {"success": false} instead of raising."""',
+        '{"prompt": prompt, "system": system, "max_tokens": max_tokens}'),
 }
 
 

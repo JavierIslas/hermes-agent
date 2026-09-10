@@ -24,6 +24,7 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     "clarify",
     "execute_code", "delegate_task",
+    "llm",
     "cronjob_manage",
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     "kanban_show", "kanban_list",
@@ -81,6 +82,14 @@ TOOLSETS = {
         ["x_search"],
     ),
     "vision": _ts("Image analysis and vision tools", ["vision_analyze"]),
+    "llm": _ts(
+        "Auxiliary LLM call (text -> text): semantic judgment on a text slice. "
+        "The RLM primitive — usable as a tool call and inside execute_code "
+        "(`from hermes_tools import llm`) to fan judgments over slices of an "
+        "input larger than the context window. Route/model configurable under "
+        "`auxiliary.llm_tool` in config.yaml.",
+        ["llm"],
+    ),
     "video": _ts("Video analysis and understanding tools (opt-in, not in default toolset)", ["video_analyze"]),
     "image_gen": _ts("Creative generation tools (images)", ["image_generate"]),
     "video_gen": _ts(
