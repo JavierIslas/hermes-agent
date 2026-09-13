@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from agent.secret_scope import is_multiplex_active
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 
 from .cards import card_spec_to_cards_v2, format_message as _format_message
 
@@ -378,12 +378,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Last inbound thread per space: DMs get a NEW thread per top-level message but users
         # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
         self._last_inbound_thread: Dict[str, str] = {}
-        try:
-            from hermes_constants import get_hermes_home as _get_hermes_home
-            _hermes_home = _get_hermes_home()
-        except (ModuleNotFoundError, ImportError):
-            _hermes_home = _Path.home() / ".hermes"
-        self._thread_count_store = _ThreadCountStore(_hermes_home / "google_chat_thread_counts.json")
+        from hermes_constants import get_hermes_home as _get_hermes_home
+        self._thread_count_store = _ThreadCountStore(_get_hermes_home() / "google_chat_thread_counts.json")
         # In-flight typing-card creates per chat_id: reserved BEFORE the API call so
         # concurrent _keep_typing calls wait instead of duplicating cards.
         self._typing_card_inflight: Dict[str, asyncio.Event] = {}
@@ -1641,7 +1637,7 @@ _STANDALONE_SA_ERRORS = {
 
 
 def _standalone_error(detail: str) -> Dict[str, Any]:
-    return {"error": f"Google Chat standalone send: {detail}"}
+    return send_error(f"Google Chat standalone send: {detail}")
 
 
 async def _standalone_send(
@@ -1701,7 +1697,7 @@ async def _standalone_send(
         return {"success": True, "message_id": payload.get("name")}
     except Exception as e:
         logger.debug("Google Chat standalone send raised", exc_info=True)
-        return {"error": f"Google Chat standalone send failed: {e}"}
+        return send_error(f"Google Chat standalone send failed: {e}")
 
 
 def register(ctx) -> None:

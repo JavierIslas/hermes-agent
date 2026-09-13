@@ -39,7 +39,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, SendResult,
+    gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType
@@ -685,6 +685,12 @@ class QQAdapter(BasePlatformAdapter):
             return bool(session_user) and operator == session_user
         return False
 
+    def _update_prompt_session_key(self, event: InteractionEvent, chat: str) -> str:
+        """Session key an update-prompt click is authorized against, built by the ONE key builder so
+        it carries the profile namespace (a hard-coded ``agent:main:`` prefix never matched a
+        multiplexed secondary bot's lane). No participant: ``c2c`` authorizes on chat == operator."""
+        return self._source_session_key(self.build_source(chat_id=chat, chat_type=event.scene))
+
     async def _default_interaction_dispatch(self, event: InteractionEvent) -> None:
         """Default interaction callback: ``approve:<session_key>:<decision>`` →
         tools.approval.resolve_gateway_approval; ``update_prompt:<answer>`` →
@@ -718,7 +724,7 @@ class QQAdapter(BasePlatformAdapter):
         update_answer = parse_update_prompt_button_data(button_data)
         if update_answer is not None:
             chat = event.group_openid or event.guild_id or event.user_openid
-            if not self._is_authorized_interaction_for_session(event, f"agent:main:qqbot:{event.scene}:{chat}"):
+            if not self._is_authorized_interaction_for_session(event, self._update_prompt_session_key(event, chat)):
                 logger.warning(
                     "[%s] Rejected unauthorized update prompt click (operator=%s)", self._log_tag, event.operator_openid
                 )
@@ -1475,22 +1481,20 @@ class QQAdapter(BasePlatformAdapter):
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
-        """Button-based exec-approval prompt (called by gateway/run.py while the
-        agent blocks on approval); clicks resolve via _default_interaction_dispatch."""
-        del metadata  # QQ has no thread_id / DM targeting overrides.
-        del allow_session  # QQ's 3-button keyboard has no session tier.
-        if smart_denied:
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Keyboard-card approval (called while the agent blocks on approval); clicks resolve via
+        _default_interaction_dispatch. QQ's 3-button keyboard has no session tier and no thread /
+        DM targeting, so only the ``always`` choice and the raw command/reason are used."""
+        description = prompt.description
+        if prompt.smart_denied:
             description += " Owner override applies to this one operation only."
         req = ApprovalRequest(
-            session_key=session_key, title="Execute this command?", description=description,
-            command_preview=command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
-            allow_permanent=allow_permanent and not smart_denied)
+            session_key=prompt.session_key, title="Execute this command?", description=description,
+            command_preview=prompt.command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+            allow_permanent="always" in prompt.choices)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
-        return await self.send_approval_request(chat_id, req, reply_to=self._last_msg_id.get(chat_id))
+        return await self.send_approval_request(
+            prompt.chat_id, req, reply_to=self._last_msg_id.get(prompt.chat_id))
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
