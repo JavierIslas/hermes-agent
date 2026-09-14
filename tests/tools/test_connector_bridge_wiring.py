@@ -589,7 +589,7 @@ def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(mo
     _connectors_on(monkeypatch, _recording_client_factory(transport))
     # A pre_tool_call redaction pass: the secret must never leave the process.
     monkeypatch.setattr(plugins, "_dispatch_pre_tool_call_hooks",
-                        lambda name, args, **kw: (None, {**args, "body": "[REDACTED]"}))
+                        lambda name, args, **kw: (None, {**args, "body": "[REDACTED]"}, False))
 
     out = _tool_call([{"name": "connectors__gmail__SEND_EMAIL",
                        "arguments": {"to": "x@example.com", "body": "sk-secret"}}])
