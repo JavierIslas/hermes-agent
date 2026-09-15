@@ -233,16 +233,14 @@ class _SlashWorker:
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
         # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
         # worker must resolve config/skills/state against the session's profile home, not the gateway's
-        # launch HERMES_HOME (#40677). The override goes through the build_subprocess_env factory's `extra`
-        # (applied last, always wins) instead of a hand-rolled env["HERMES_HOME"] assignment.
-        from tools.environments.local import build_subprocess_env
+        # launch HERMES_HOME (#40677).
+        from tools.environments.local import served_profile_child_env
 
         # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/
-        # infra) are still stripped. Multi-profile sessions resolve against the session's profile
-        # home via `extra` (applied last, always wins); the base already carries the HOME contract.
-        env = _prepend_tool_paths(build_subprocess_env(
-            hermes_subprocess_env(inherit_credentials=True), scrub_secrets=False,
-            inherit_profile_home=False, extra={"HERMES_HOME": str(profile_home)} if profile_home else None))
+        # infra) are still stripped. A served profile's worker gets THAT profile's home + secrets and
+        # none of the launch profile's .env / TERMINAL_* residue, exactly what a standalone
+        # `hermes -p X` would load itself.
+        env = _prepend_tool_paths(served_profile_child_env(target_home=profile_home, inherit_credentials=True))
         # Internal slash workers must import the same checkout as their parent.
         module_root = str(Path(__file__).resolve().parent.parent)
         env["PYTHONPATH"] = os.pathsep.join(
@@ -511,10 +509,12 @@ def _profile_home(profile: str | None) -> Path | None:
     if home.resolve() == Path(_hermes_home).resolve():
         return None  # already the launch profile (no override needed)
     if home not in _served_profile_homes:
-        # Last moment ambient TERMINAL_* is provably the launch profile's own: freeze it for
-        # launch-profile turns before any secondary code runs (tui_gateway/launch_terminal_policy.py).
-        from tui_gateway.launch_terminal_policy import capture_launch_terminal_env
-        capture_launch_terminal_env()
+        # This process now hosts a second profile home: freeze the launch env as the launch
+        # profile's own and flip get_secret() to fail closed, so an unscoped read for a
+        # secondary raises instead of returning the launch profile's os.environ value
+        # (tui_gateway/launch_profile_policy.py). Must run before any secondary code.
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+        activate_multi_profile_hosting()
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
 
@@ -525,25 +525,21 @@ _served_profile_homes: set[Path] = set()
 
 
 def _profile_scoped(handler):
-    """Bind ``params['profile']``'s HERMES_HOME around a handler (pets/projects resolve via
-    ``get_hermes_home``, so app-global remote mode still hits the focused profile). No-op for launch.
+    """Bind ``params['profile']``'s full runtime scope (HERMES_HOME + secrets + terminal policy) around a
+    handler, so config.yaml ``${VAR}`` refs, provider credential checks and ``.env`` writes resolve to
+    THAT profile (app-global remote mode hits the focused profile). Home alone left ``get_secret`` on the
+    launch process's ``os.environ``: ``config.get full`` for a secondary shipped the default profile's
+    expanded secrets and ``config.set`` published a secondary's ``.env`` edit into the shared process env.
 
-    Secondary-profile adapters are constructed inside ``_profile_runtime_scope`` (secret scope installed +
-    multiplex active) — the same discriminator the Buzz/SimpleX adapters use for this bug class (#98738).
-    Once multiplexing is active, launch-profile *turns* bind their own terminal scope
-    (``prompt_turn._prepare_turn_input``) so they never depend on ambient ``os.environ``
-    that a secondary context might have poisoned (#107422). Single-profile processes stay
-    unscoped and keep legacy ``os.environ`` precedence.
+    Launch profile: unscoped while this is a single-profile process (legacy ``os.environ`` precedence,
+    systemd / ``op run`` injection); once multiplexing is active it binds its own scope from the env
+    frozen at activation (``_session_profile_runtime_scope``), never ambient state a secondary context
+    might have poisoned (#107422).
     """
     def wrapper(rid, params):
         home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
-        if home is None:
+        with _session_profile_runtime_scope({"profile_home": str(home) if home else None}):
             return handler(rid, params)
-        token = set_hermes_home_override(home)
-        try:
-            return handler(rid, params)
-        finally:
-            reset_hermes_home_override(token)
     return wrapper
 
 
@@ -693,6 +689,16 @@ def _open_requests(sid: str) -> list[dict]:
             mirrored = session.get("_compute_host_open_request")
             return [dict(mirrored)] if isinstance(mirrored, dict) else []
     return []
+
+
+def _pending_connection_request_payload(sid: str) -> dict | None:
+    """The open connection operation on *sid* as its ``connection.request`` payload, so a client
+    that missed the event (or restarted) restores the card with the server's deadline."""
+    from tools.connectors import live
+
+    session = _sessions.get(sid)
+    operation = live.current(str(session.get("session_key") or "")) if session else None
+    return operation.request_payload() if operation is not None else None
 
 
 def _pending_approval_request_payload(session_key: str) -> dict | None:
@@ -943,31 +949,29 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
-def _bind_build_profile_scopes(profile_home: str) -> "_TurnScopes":
-    """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. Fail-open per
-    scope (the build must not die on a scope helper); the terminal installer itself fails closed (malformed
-    policy → refusal scope) so _make_agent's terminal probing / cwd hints resolve the routed profile."""
+def _bind_build_profile_scopes(profile_home: "str | None") -> "_TurnScopes | None":
+    """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. ``None`` is the
+    launch profile: unscoped in a single-profile process, its own frozen-env scope once multiplexing is
+    active (a hosted-room turn for a default member otherwise died at build with ``UnscopedSecretError``
+    because the launch profile was treated as "no scope"). Fail-open per scope (the build must not die on
+    a scope helper); the terminal installer itself fails closed (malformed policy → refusal scope) so
+    _make_agent's terminal probing / cwd hints resolve the routed profile."""
+    if not profile_home and not _launch_profile_scope_needed():
+        return None
     scopes = _TurnScopes()
-    scopes.home = set_hermes_home_override(profile_home)
     with contextlib.suppress(Exception):
-        scopes.secret = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-    scopes.terminal = None
-    with contextlib.suppress(Exception):
-        from tools.terminal_scope import install_profile_terminal_scope
-        scopes.terminal = install_profile_terminal_scope(Path(profile_home))
+        return _profile_runtime_scope_tokens(profile_home)
+    if profile_home:  # secret/terminal helper failed: keep at least the home + terminal refusal scope
+        scopes.home = set_hermes_home_override(profile_home)
+        with contextlib.suppress(Exception):
+            from tools.terminal_scope import install_profile_terminal_scope
+            scopes.terminal = install_profile_terminal_scope(Path(profile_home))
     return scopes
 
 
-def _release_build_profile_scopes(scopes: "_TurnScopes") -> None:
-    if scopes.home is not None:
-        reset_hermes_home_override(scopes.home)
-    if scopes.secret is not None:
-        with contextlib.suppress(Exception):
-            reset_secret_scope(scopes.secret)
-    if scopes.terminal is not None:
-        with contextlib.suppress(Exception):
-            from tools.terminal_scope import reset_terminal_scope
-            reset_terminal_scope(scopes.terminal)
+def _release_build_profile_scopes(scopes: "_TurnScopes | None") -> None:
+    with contextlib.suppress(Exception):
+        _release_profile_runtime_scope_tokens(scopes)
 
 
 def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
@@ -1107,8 +1111,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # Global-remote: bind the session profile's HERMES_HOME and hand the agent that profile's db —
             # DEDICATED and ours until _transfer_db_to_agent in the finally; FAIL CLOSED rather than
             # binding the launch DB and bleeding rows into the wrong state.db.
+            scopes = _bind_build_profile_scopes(profile_home)
             if profile_home:
-                scopes = _bind_build_profile_scopes(profile_home)
                 session_db = _open_profile_session_db(profile_home)
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started
@@ -1310,6 +1314,7 @@ def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> st
     result = server_requests.send(method, sid, params, timeout=timeout)
     value = (result or {}).get("value", "")
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
 
 
 def _clarify_timeout_seconds() -> float | None:
@@ -1905,8 +1910,8 @@ def _tool_progress_enabled(sid: str) -> bool:
 
 
 def _tool_lifecycle_required_for_ui(name: str) -> bool:
-    """Interactive UI, not optional chrome: Desktop renders clarify / setup_mcp cards from the tool-call part."""
-    return name in ("clarify", "setup_mcp")
+    """Interactive UI, not optional chrome: Desktop renders clarify / connection cards from the tool-call part."""
+    return name in ("clarify", "manage_connections", "setup_mcp")
 
 
 def _restart_slash_worker(sid: str, session: dict):
@@ -2786,7 +2791,8 @@ def _live_session_payload(
     }
     for key, value in (("inflight", inflight), ("queued", queued),
                        ("pending_approval", _pending_approval_request_payload(str(session.get("session_key") or ""))),
-                       ("open_requests", _open_requests(sid))):
+                       ("open_requests", _open_requests(sid)),
+                       ("pending_connection", _pending_connection_request_payload(sid))):
         if value:
             payload[key] = value
     return _attach_todo_state(payload, session)

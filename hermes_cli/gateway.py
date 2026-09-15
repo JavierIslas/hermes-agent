@@ -1499,6 +1499,22 @@ def _print_served_ingress_urls(profile: str | None = None) -> None:
             print(line)
 
 
+def _print_unserved_shared_ingress(profile: str | None) -> None:
+    """Shared-ingress platforms (WhatsApp/Relay) this served profile enabled that the multiplexer runs
+    only on the default profile — the ``whatsapp: not served under multiplex`` line."""
+    try:
+        from hermes_cli.gateway_multiplex_served import served_profile_unserved_platforms
+        unserved = served_profile_unserved_platforms(profile or "")
+    except Exception:
+        return
+    if not unserved:
+        return
+    print()
+    for platform, reason in sorted(unserved.items()):
+        print(f"  ⚠ {platform}: {reason}")
+    print("  Enable it on the default profile (shared ingress serves every profile), or disable it here.")
+
+
 def _print_other_profiles_gateway_status() -> None:
     """Print other profiles' running gateways at the bottom of ``hermes gateway status``."""
     try:
@@ -5059,19 +5075,22 @@ def _prompt_csv(prompt_text: str, default: str) -> str:
 
 # (default index, *choices) for the no-allowlist access prompt, keyed by is_email.
 _UNAUTHORIZED_ACCESS_CHOICES = {
-    True: (2,
+    True: (3,
         "Enable open access (any email sender can message the bot)",
         "Use DM pairing (unknown email senders receive a pairing code)",
+        "Politely decline unknown senders (one-time message, then silence)",
         "Keep unknown senders silent"),
     False: (1,
         "Enable open access (anyone can message the bot)",
         "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+        "Politely decline unknown senders (one-time message, then silence)",
         "Skip for now (bot will deny all users until configured)"),
 }
 
 
-def _prompt_unauthorized_access(*, is_email: bool) -> None:
-    """No allowlist was given — ask open access vs DM pairing vs skip/silent, and persist."""
+def _prompt_unauthorized_access(platform_key: str) -> None:
+    """No allowlist was given — ask open access vs DM pairing vs decline vs skip/silent, and persist."""
+    is_email = platform_key == "email"
     print()
     default_idx, *access_choices = _UNAUTHORIZED_ACCESS_CHOICES[is_email]
     access_idx = prompt_choice("  How should unauthorized users be handled?", access_choices, default_idx)
@@ -5083,6 +5102,9 @@ def _prompt_unauthorized_access(*, is_email: bool) -> None:
             _set_platform_unauthorized_dm_behavior("email", "pair")
         print_success("  DM pairing mode — users will receive a code to request access.")
         print_info("  Approve with: hermes pairing approve <platform> <code>")
+    elif access_idx == 2:
+        _set_platform_unauthorized_dm_behavior(platform_key, "decline")
+        print_success("  Unknown senders get one polite decline, then silence (unauthorized_dm_behavior: decline).")
     elif is_email:
         print_success("  Unknown email senders will be ignored.")
     else:
@@ -5154,7 +5176,7 @@ def _prompt_allowlist_var(var: dict, platform_key: str, auto_owner_user_id) -> s
     )
     value = prompt(f"  {var['prompt']}", password=False)
     if not value:
-        _prompt_unauthorized_access(is_email=platform_key == "email")
+        _prompt_unauthorized_access(platform_key)
         return None
     cleaned = value.replace(" ", "")
     if "DISCORD" in var["name"]:
@@ -6344,6 +6366,7 @@ def _cmd_status(args):
         print("✓ Gateway is running via the default-profile multiplexer")
         print("  Manage it from the default profile: hermes gateway status")
         _print_served_ingress_urls(get_active_profile_name())
+        _print_unserved_shared_ingress(get_active_profile_name())
     elif (kind := _installed_service_kind_for(lambda: _windows_service_installed)) is not None:
         if kind == "systemd":
             systemd_status(deep, system=system, full=full)
