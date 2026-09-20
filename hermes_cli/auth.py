@@ -246,6 +246,8 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     p.id: p for p in (r if isinstance(r, ProviderConfig) else _api_key_provider(*r) for r in _REGISTRY_ROWS)
 }
+# The rows above, before any plugin touches the dict (a user plugin may override these; #48450).
+BUILTIN_PROVIDER_IDS = frozenset(PROVIDER_REGISTRY)
 
 # ``hermes_cli.config`` discovers model-provider plugins while importing, and a plugin may read this
 # module's registry during that discovery. Keep the import below ProviderConfig / PROVIDER_REGISTRY so

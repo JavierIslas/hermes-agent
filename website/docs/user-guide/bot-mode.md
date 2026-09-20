@@ -51,7 +51,7 @@ An **Advanced** disclosure opens the full capabilities surface:
 
 - **Clone from an existing profile** — start from another Bot's config, skills, SOUL, and memory, or pick **Fresh profile** for a clean start.
 - **Create empty** — skip the bundled skills entirely for a minimal profile.
-- **Model & provider pin** — give the Bot its own model. Any provider/model pair Hermes knows about works, and different Bots can run on different models side by side. Leave it unset to inherit from the launch profile.
+- **Model & provider pin** — give the Bot its own model. Any provider/model pair Hermes knows about works, and different Bots can run on different models side by side. Leave it unset to inherit from the launch profile. Picking a model from the Bot Chat's composer sticks to that chat (it survives reopening the app) until you change the Bot's profile model, which takes over again.
 - **Custom SOUL.md** — the Bot's persona and standing instructions.
 - **Per-skill, per-toolset, and per-MCP-server enablement** — tick exactly the capabilities this specialist needs.
 - **Copy API keys from the main profile** — on by default. Each Bot gets its own credential store: static API keys are copied in, while single-use OAuth logins (Anthropic, OpenAI Codex, xAI) are not copied — sign the Bot in itself with `hermes -p <name> auth add <provider>`. See [Every profile owns its credentials](./profiles.md#every-profile-owns-its-credentials).
@@ -236,7 +236,10 @@ hermes peer stop spark run_abc123
 `hermes peer dm` delivers into the remote agent's canonical Bot Chat over the peer's existing API server, runs one agent turn there, and prints the reply on stdout — the exact cross-machine twin of the local `hermes -p <bot> chat` command.
 
 Use `peer dm` only for short queries and receipts because it holds one HTTP
-connection until the turn finishes. For a long turn, `peer run` returns a
+connection until the turn finishes. If the peer takes the message but the turn outlasts that
+connection, the message is already in the peer's Bot Chat and the turn keeps running there, so the
+command says exactly that instead of reporting the peer unreachable — resending would run the turn
+twice. A timeout while connecting still reports the peer unreachable. For a long turn, `peer run` returns a
 `run_id` immediately; poll it with `peer status`. The run inherits the
 canonical Bot Chat transcript, and a stable `--idempotency-key` makes a retry
 return the original run instead of starting duplicate work. Use `peer stop`
