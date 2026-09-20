@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from tools.async_delegation import _new_delegation_id, record_unit_child
 from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
-    SUBAGENT_FAILURE_STATUSES, _clean_error_text, _print_completion_line, _quiet, format_batch_tag,
+    SUBAGENT_FAILURE_STATUSES, _print_completion_line, _quiet, describe_subagent_failure, format_batch_tag,
 )
 from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
@@ -91,8 +91,14 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
     label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
     status = entry.get("status", "?")
     _slot = f"{tag} · {idx+1}/{n_tasks}" if tag else f"{idx+1}/{n_tasks}"
-    completion_line = f"{'✓' if status == 'completed' else '✗'} [{_slot}] {label}  ({entry.get('duration_seconds', 0)}s)"
-    _err_line = _clean_error_text(entry.get("error"), max_chars=120) if status in SUBAGENT_FAILURE_STATUSES else ""
+    schema_invalid = entry.get("schema_valid") is False and status == "completed"
+    icon = "⚠" if schema_invalid else ("✓" if status == "completed" else "✗")
+    completion_line = f"{icon} [{_slot}] {label}  ({entry.get('duration_seconds', 0)}s)"
+    _err_line = (
+        describe_subagent_failure(entry.get("failure_reason"), entry.get("error"), max_chars=120)
+        if status in SUBAGENT_FAILURE_STATUSES else "")
+    if schema_invalid:
+        _err_line = "output_schema not satisfied — raw text returned (schema_valid=false)"
     if _err_line:
         completion_line += f" — {_err_line}"
     _print_completion_line(parent_agent, spinner_ref, completion_line)
@@ -126,12 +132,19 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         except Exception as exc:
             return _fabricated_entry(idx, "error", str(exc), _child_by_index.get(idx))
 
-    with DaemonThreadPoolExecutor(max_workers=batch.max_children) as executor:
+    executor = DaemonThreadPoolExecutor(max_workers=batch.max_children)
+    # ``with`` would join every worker on exit, so a child wedged in an
+    # uninterruptible call defeats the interrupt fast-path: the poll loop marks
+    # it interrupted and returns, then the join hangs forever. Shutdown without
+    # waiting on the interrupt path instead (same shape as moa_loop).
+    interrupted = False
+    try:
         futures = {executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
                 results.extend(_entry_of(f, futures[f]) for f in pending)
+                interrupted = True
                 break
             done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             for future in done:
@@ -151,6 +164,10 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                         _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
                         push_task_failure_notice(
                             batch.unit_id, {**entry, **({"live_transcript": _live} if _live else {})}, n_tasks=n_tasks)
+    finally:
+        # Abandoned workers unwind on their own (daemon threads, and the
+        # child-run layer already applies the deferred-close transport drain).
+        executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
     results.sort(key=lambda r: r["task_index"])  # match input order
 
 def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
