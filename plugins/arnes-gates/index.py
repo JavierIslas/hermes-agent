@@ -75,6 +75,14 @@ DIRS_RUIDO = {
     "out",
     ".gradle",
     ".idea",
+    # Flutter/Dart (desde 2026-09-22): .dart_tool es el node_modules de
+    # dart (caches de build, package_config, artifacts del engine);
+    # ephemeral/ y .plugin_symlinks son generados por el tooling de
+    # platform channels; .fvm es el version manager local.
+    ".dart_tool",
+    "ephemeral",
+    ".plugin_symlinks",
+    ".fvm",
 }
 
 

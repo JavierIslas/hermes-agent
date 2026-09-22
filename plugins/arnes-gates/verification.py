@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,34 @@ from typing import Any, Optional
 from . import state as gate_state
 
 _TIMEOUT = 120  # segundos
+# Flutter/Dart (desde 2026-09-22): el compile frío de `flutter test`
+# (kernel snapshot + build de la tool) supera holgadamente los 120s default
+# del resto de los runners. 600s cubre el primer run sin esperar de más.
+_TIMEOUT_FLUTTER = 600  # segundos
+
+# Ubicaciones donde buscar el SDK de Flutter si no está en PATH. Orden:
+# imagen (capa pinned del Dockerfile) → volumen (SDK manual en el data
+# volume, sobrevive rebuilds; verificado 2026-09-22 con 3.47.5).
+_FLUTTER_CANDIDATOS = (
+    "/opt/flutter/bin/flutter",
+    "/opt/data/flutter-sdk/bin/flutter",
+)
+
+# Manifiestos de proyecto para resolver root en árboles SIN git (fallback 3
+# de _detect_project_root). Orden indiferente (any()).
+_MANIFEST_MARKERS = (
+    "pubspec.yaml",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "package.json",
+    "go.mod",
+    "Cargo.toml",
+    "pyproject.toml",
+    "setup.py",
+    "requirements.txt",
+    "Makefile",
+)
 
 
 # =============================================================================
@@ -92,6 +121,24 @@ def _detect_project_root() -> Path:
         except Exception:
             pass
 
+    # 3. terminal_cwd / cwd del proceso sin git (desde 2026-09-22): árboles
+    # que no son repo (ej: ProyectoMagicTCG en /workspace). Se toma el
+    # directorio del manifiesto de proyecto más cercano subiendo desde
+    # terminal_cwd (o cwd): pubspec.yaml, pom.xml, package.json, go.mod,
+    # Cargo.toml, pyproject.toml. ANTES de caer al cwd crudo: sin esto, la
+    # detección de runner muere en /opt/hermes y run_tests fail-openea sin
+    # haber tocado el proyecto real.
+    for start in (gate.get("terminal_cwd"), str(Path.cwd())):
+        if not start:
+            continue
+        start_dir = Path(start)
+        if not start_dir.is_dir():
+            continue
+        for d in [start_dir, *start_dir.parents]:
+            if any((d / m).exists() for m in _MANIFEST_MARKERS) and str(d) != "/opt/hermes":
+                return d
+        break
+
     return Path.cwd()
 
 
@@ -135,6 +182,15 @@ def _detect_tests_setup(root: Path) -> tuple[list[str] | None, Path | None]:
             if (d / "gradlew").exists():
                 return (["./gradlew", "test"], d)
             return (["gradle", "test"], d)
+        # Flutter/Dart (desde 2026-09-22): pubspec.yaml → flutter test (si
+        # depende del SDK de flutter) o dart test (proyecto Dart puro).
+        # Antes que make: pubspec es un manifest de build con ciclo de vida
+        # propio; un Makefile en un repo Flutter es atajo, no el runner.
+        if _es_flutter(d):
+            flutter = _flutter_for()
+            return ([flutter or "flutter", "test"], d)
+        if _es_dart_puro(d):
+            return ([_dart_for() or "dart", "test"], d)
         if _es_make_test(d):
             return (["make", "test"], d)
     return (None, None)
@@ -160,6 +216,18 @@ def _detect_lint_setup(root: Path) -> tuple[list[str] | None, Path | None]:
             if (d / "gradlew").exists():
                 return (["./gradlew", "checkstyleMain", "checkstyleTest"], d)
             return (["gradle", "checkstyleMain", "checkstyleTest"], d)
+        # Flutter/Dart (desde 2026-09-22): flutter analyze / dart analyze.
+        # El analyzer de dart es el linter canónico del ecosistema (viene con
+        # el SDK y lee analysis_options.yaml — flutter_lints en el proyecto).
+        # SIN --no-pub a propósito: si las deps del proyecto no resuelven,
+        # analyze con --no-pub igual corre y escupe una avalancha de falsos
+        # "issues" (uri_does_not_exist en cascada); con pub, muere antes con
+        # "version solving failed" → el gate lo clasifica como env (fail_open),
+        # que es la clasificación honesta.
+        if _es_flutter(d):
+            return ([_flutter_for() or "flutter", "analyze"], d)
+        if _es_dart_puro(d):
+            return ([_dart_for() or "dart", "analyze"], d)
     return (None, None)
 
 
@@ -262,6 +330,86 @@ def _es_mypy(d: Path) -> bool:
 
 
 # =============================================================================
+# Flutter/Dart (desde 2026-09-22).
+# =============================================================================
+def _leer_pubspec(d: Path) -> dict:
+    """Lee el pubspec.yaml como dict; {} si falta o no parsea (fail-open)."""
+    import yaml
+
+    pubspec = d / "pubspec.yaml"
+    if not pubspec.exists():
+        return {}
+    try:
+        data = yaml.safe_load(pubspec.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _es_flutter(d: Path) -> bool:
+    """Flutter: pubspec.yaml con `flutter:` (sdk: flutter) en dependencies o
+    dev_dependencies, paquetes que solo resuelven con el SDK de flutter
+    (flutter_test/flutter_driver/integration_test), o sección `flutter:`
+    propia (assets, plugin)."""
+    data = _leer_pubspec(d)
+    if not data:
+        return False
+    for seccion in ("dependencies", "dev_dependencies"):
+        deps = data.get(seccion)
+        if not isinstance(deps, dict):
+            continue
+        if isinstance(deps.get("flutter"), dict):
+            return True
+        for paquete in ("flutter_test", "flutter_driver", "integration_test"):
+            if paquete in deps:
+                return True
+    return isinstance(data.get("flutter"), dict)
+
+
+def _es_dart_puro(d: Path) -> bool:
+    """Proyecto Dart puro (CLI/package, sin SDK de flutter)."""
+    data = _leer_pubspec(d)
+    if not data:
+        return False
+    for seccion in ("dependencies", "dev_dependencies"):
+        deps = data.get(seccion)
+        if isinstance(deps, dict) and isinstance(deps.get("flutter"), dict):
+            return False
+    return not isinstance(data.get("flutter"), dict)
+
+
+def _flutter_for() -> Optional[str]:
+    """Resuelve el binario flutter: PATH → candidatos (imagen/volumen)."""
+    en_path = shutil.which("flutter")
+    if en_path:
+        return en_path
+    for candidato in _FLUTTER_CANDIDATOS:
+        if Path(candidato).exists():
+            return candidato
+    return None
+
+
+def _dart_for() -> Optional[str]:
+    """Resuelve el binario dart alineado al SDK de flutter (mismo root),
+    si existe; si no, dart de PATH. None si no hay ninguno."""
+    flutter = _flutter_for()
+    if flutter:
+        dart = Path(flutter).parent / "dart"
+        if dart.exists():
+            return str(dart)
+    return shutil.which("dart") or None
+
+
+def _timeout_for(cmd: list[str]) -> int:
+    """Timeout según el runner: flutter/dart reciben el extendido (compile
+    frío); el resto mantiene los 120s default."""
+    binario = Path(cmd[0]).name if cmd else ""
+    if binario in ("flutter", "dart"):
+        return _TIMEOUT_FLUTTER
+    return _TIMEOUT
+
+
+# =============================================================================
 # Helpers de ejecución.
 # =============================================================================
 def _correr(cmd: list[str], cwd: Path | None, timeout: int = _TIMEOUT) -> subprocess.CompletedProcess:
@@ -313,10 +461,10 @@ def run_tests(target: Optional[str] = None) -> str:
     if target and "pytest" in " ".join(cmd):
         cmd.append(str(target))
     try:
-        proc = _correr(cmd, cwd)
+        proc = _correr(cmd, cwd, timeout=_timeout_for(cmd))
     except subprocess.TimeoutExpired:
         gate_state.get()["tests_green"] = False
-        return f"ERROR: los tests tardaron más de {_TIMEOUT}s (timeout)."
+        return f"ERROR: los tests tardaron más de {_timeout_for(cmd)}s (timeout)."
     salida = (proc.stdout or "") + (proc.stderr or "")
     gate_state.get()["last_test_output"] = salida
 
@@ -373,10 +521,10 @@ def run_lint(target: Optional[str] = None) -> str:
     else:
         cmd.append(str(root))
     try:
-        proc = _correr(cmd, cwd)
+        proc = _correr(cmd, cwd, timeout=_timeout_for(cmd))
     except subprocess.TimeoutExpired:
         gate_state.get()["lint_green"] = False
-        return f"ERROR: el linter tardó más de {_TIMEOUT}s (timeout)."
+        return f"ERROR: el linter tardó más de {_timeout_for(cmd)}s (timeout)."
     salida = (proc.stdout or "") + (proc.stderr or "")
     gate_state.get()["last_lint_output"] = salida
     gate_state.get()["lint_green"] = proc.returncode == 0

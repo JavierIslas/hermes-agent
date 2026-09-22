@@ -58,6 +58,10 @@ _ENV_FAIL_PATTERNS = [
     "Could not resolve all files",
     "Non-resolvable parent POM",
     "Cannot access ",
+    # Flutter/Dart (desde 2026-09-22): pub no resuelve versiones / SDK
+    # bloqueado por otro proceso = environment, no tests rojos.
+    "version solving failed",
+    "Waiting for another flutter command to release the startup lock",
 ]
 
 # Linters: ruff/flake8/mypy
@@ -81,6 +85,26 @@ _RE_CHECKSTYLE_DONE = re.compile(
 )
 _RE_CHECKSTYLE_AUDIT = re.compile(r"Audit done\.?", re.IGNORECASE)
 
+# Flutter — flutter test: "00:03 +8: All tests passed!" (el acumulador +N es
+# el total de tests PASADOS; "-M" cuenta fallos). "Some tests failed." cierra.
+_RE_FLUTTER_ALL_PASSED = re.compile(r"\+(\d+):\s*All tests passed!")
+_RE_FLUTTER_SOME_FAILED = re.compile(r"-(\d+):?\s*(?:Some tests failed|failed)")
+_RE_FLUTTER_FAILED_TAIL = re.compile(r"Some tests failed")
+
+# Flutter/Dart — analyze: "No issues found!" / "N issues found." /
+# "N errors found." / "No errors found".
+_RE_ANALYZE_OK = re.compile(r"No issues found|No errors found")
+_RE_ANALYZE_ISSUES = re.compile(r"(\d+) issues? found")
+_RE_ANALYZE_ERRORS = re.compile(r"(\d+) errors? found")
+
+# Dart — compile error de código (no environment): "lib/a.dart:3:8: Error:"
+# (location + Error:) o "Error:" al inicio de línea (CLI del compilador).
+# Angosto a propósito: `\bError: ` a secas matchearía tracebacks de Python
+# ("OSError: ...") y reclasificaría fallos de env de pytest como fail.
+_RE_DART_COMPILE_ERROR = re.compile(
+    r"(?:\.dart:\d+:\d+:\s*Error: |^Error: )", re.MULTILINE
+)
+
 
 # =============================================================================
 # Evaluadores.
@@ -90,6 +114,18 @@ def evaluate_test_evidence(output: Optional[str]) -> Evidence:
     """Evalúa el output crudo de run_tests y devuelve un verdict."""
     if not output or not output.strip():
         return Evidence("fail_open", "no hay output de tests — no se verificaron")
+
+    # Dart/Flutter (desde 2026-09-22): ANTES del chequeo de environment —
+    # los mensajes de compile error contienen "not found"/"No such file"
+    # ("Getter not found", "Target of URI doesn't exist") y el patrón
+    # genérico los reclasificaría como fail_open de env. Un compile error
+    # es código roto: fail real.
+    if _RE_DART_COMPILE_ERROR.search(output):
+        return Evidence(
+            "fail",
+            "error de compilación dart/flutter. El código no compila — "
+            "corregilo antes de cerrar."
+        )
 
     # ¿Fallo de environment?
     for pattern in _ENV_FAIL_PATTERNS:
@@ -141,6 +177,11 @@ def evaluate_test_evidence(output: Optional[str]) -> Evidence:
     ev_java = _evaluate_java_tests(output)
     if ev_java is not None:
         return ev_java
+
+    # ---- Flutter (desde 2026-09-22): flutter test ----
+    ev_flutter = _evaluate_flutter_tests(output)
+    if ev_flutter is not None:
+        return ev_flutter
 
     # Output no reconocido: fail-open honesto.
     return Evidence(
@@ -204,6 +245,53 @@ def _evaluate_java_tests(output: str) -> Optional[Evidence]:
     return None
 
 
+def _evaluate_flutter_tests(output: str) -> Optional[Evidence]:
+    """Evalúa output de flutter test. None si no aplica.
+
+    Formato del runner compact de flutter: "00:03 +8: All tests passed!"
+    (acumulador +N = tests pasados al momento de la línea final) o
+    "00:05 +6 -2: Some tests failed.". El conteo se toma de la ÚLTIMA
+    línea del acumulador (la final), no de las intermedias de carga.
+    """
+    # Fallos: "-M" en la línea final, o el tail explícito.
+    failed = _RE_FLUTTER_SOME_FAILED.search(output)
+    if failed and int(failed.group(1)) > 0:
+        return Evidence(
+            "fail",
+            f"flutter: {failed.group(1)} test(s) fallaron. "
+            "Corregí los tests antes de cerrar."
+        )
+    if _RE_FLUTTER_FAILED_TAIL.search(output):
+        return Evidence(
+            "fail",
+            "flutter: Some tests failed. Corregí los tests antes de cerrar."
+        )
+
+    # Éxito: tomar el ÚLTIMO acumulador "+N: All tests passed!".
+    matches = list(_RE_FLUTTER_ALL_PASSED.finditer(output))
+    if matches:
+        n = int(matches[-1].group(1))
+        if n > 0:
+            return Evidence("pass", f"flutter: {n} tests pasaron")
+        # +0: corrió pero no había tests — no mintamos verde (política
+        # pytest 0-passed / maven 0-tests).
+        return Evidence(
+            "fail_open",
+            "flutter: corrió con 0 tests. El finish gate no bloquea, pero "
+            "NO se verificó nada."
+        )
+
+    # Error de compilación dart = código roto (no environment).
+    if _RE_DART_COMPILE_ERROR.search(output):
+        return Evidence(
+            "fail",
+            "flutter: error de compilación dart. El código no compila — "
+            "corregilo antes de cerrar."
+        )
+
+    return None
+
+
 def evaluate_lint_evidence(output: Optional[str]) -> Evidence:
     """Evalúa el output crudo de run_lint y devuelve un verdict."""
     if not output or not output.strip():
@@ -263,6 +351,28 @@ def evaluate_lint_evidence(output: Optional[str]) -> Evidence:
     # Checkstyle sin conteo: "Starting audit... Audit done." sin errores = pass.
     if _RE_CHECKSTYLE_AUDIT.search(output):
         return Evidence("pass", "checkstyle: audit completo sin violaciones reportadas")
+
+    # Flutter/Dart — analyze (desde 2026-09-22): "N issues found." /
+    # "N errors found." / "No issues found!".
+    issues = _RE_ANALYZE_ISSUES.search(output)
+    if issues:
+        n = int(issues.group(1))
+        if n > 0:
+            return Evidence(
+                "fail",
+                f"analyze: {n} issue(s) encontrados. Corregí antes de cerrar."
+            )
+        # n == 0: "0 issues found" = limpio, no fallo (zero-count guard).
+    errors = _RE_ANALYZE_ERRORS.search(output)
+    if errors:
+        n = int(errors.group(1))
+        if n > 0:
+            return Evidence(
+                "fail",
+                f"analyze: {n} error(s) encontrados. Corregí antes de cerrar."
+            )
+    if _RE_ANALYZE_OK.search(output):
+        return Evidence("pass", "analyze: linter limpio (sin issues)")
 
     # Output no reconocido: si está vacío o no tiene errores, asumir pass.
     # Muchos linters no imprimen nada cuando todo está limpio.

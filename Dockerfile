@@ -73,6 +73,27 @@ RUN apt-get -o Acquire::Retries=3 update && \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils openjdk-25-jdk-headless maven && \
     rm -rf /var/lib/apt/lists/*
 
+# ---------- Flutter SDK (pinned, verified sha256) ----------
+# For Flutter/Dart test+lint support in the arnes-gates plugin (runner:
+# `flutter test` / `flutter analyze`; detection sees pubspec.yaml). Pinned to
+# stable with SHA: Google reshuffles tarball contents without notice, so an
+# unpinned download is an unreproducible image. Resolves via PATH first; the
+# plugin's _FLUTTER_CANDIDATOS also probes /opt/flutter/bin/flutter (this
+# layer) and /opt/data/flutter-sdk/bin/flutter (volume SDK, survives rebuilds
+# without an image bump — the interim path until this image is rebuilt).
+# Unpacked as root under /opt/flutter; world-readable, no chmod needed (the
+# tarball ships 755 dirs / 644-755 files). Analytics disabled globally so
+# `flutter test` runs don't phone home from CI or the agent harness.
+ENV FLUTTER_ROOT=/opt/flutter
+RUN curl -fsSL -o /tmp/flutter.tar.xz \
+    https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.5-stable.tar.xz && \
+    echo "2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb  /tmp/flutter.tar.xz" | sha256sum -c - && \
+    tar -xJf /tmp/flutter.tar.xz -C /opt && \
+    rm /tmp/flutter.tar.xz && \
+    /opt/flutter/bin/flutter config --no-analytics && \
+    /opt/flutter/bin/dart --disable-analytics
+ENV PATH="/opt/flutter/bin:${PATH}"
+
 # Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
 # public library name stable so both the system interpreter and the uv-created
 # venv resolve the replacement without changing Python import paths.

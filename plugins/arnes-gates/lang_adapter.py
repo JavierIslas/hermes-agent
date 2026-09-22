@@ -109,6 +109,10 @@ _STACK_MARKERS: list[tuple[str, str]] = [
     ("pom.xml", "java"),
     ("build.gradle", "java"),
     ("build.gradle.kts", "java"),
+    # Flutter/Dart (desde 2026-09-22): sin adapter propio — degradación
+    # honesta (Q3/Q4 → AVISO, find_references no los ve), como el resto
+    # de los stacks no-Python/Java del registro.
+    ("pubspec.yaml", "dart"),
     ("Gemfile", "ruby"),
     ("mix.exs", "elixir"),
     ("CMakeLists.txt", "cpp"),
