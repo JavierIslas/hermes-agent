@@ -81,16 +81,27 @@ RUN apt-get -o Acquire::Retries=3 update && \
 # plugin's _FLUTTER_CANDIDATOS also probes /opt/flutter/bin/flutter (this
 # layer) and /opt/data/flutter-sdk/bin/flutter (volume SDK, survives rebuilds
 # without an image bump — the interim path until this image is rebuilt).
-# Unpacked as root under /opt/flutter; world-readable, no chmod needed (the
-# tarball ships 755 dirs / 644-755 files). Analytics disabled globally so
-# `flutter test` runs don't phone home from CI or the agent harness.
+#
+# Two traps verified empirically (2026-09-22, first rebuild attempt):
+# 1. The tarball is a git checkout; extracting as ROOT applies the archive's
+#    own UIDs, so git refuses with "dubious ownership" the moment `flutter
+#    config` touches the SDK repo (exit 128). Fix: safe.directory scoped to
+#    THIS RUN via GIT_CONFIG_COUNT env vars (no global config written).
+# 2. The flutter tool REWRITES bin/cache/*.stamp on every invocation even
+#    when fully precached — a read-only SDK breaks `flutter test` (verified:
+#    update_engine_version.sh Permission denied). The runtime hermes user
+#    must own the tree. useradd (uid 10000) runs LATER in this Dockerfile,
+#    so chown numerically; stage2-hook re-chowns to the remapped UID at boot.
 ENV FLUTTER_ROOT=/opt/flutter
 RUN curl -fsSL -o /tmp/flutter.tar.xz \
     https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.5-stable.tar.xz && \
     echo "2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb  /tmp/flutter.tar.xz" | sha256sum -c - && \
     tar -xJf /tmp/flutter.tar.xz -C /opt && \
     rm /tmp/flutter.tar.xz && \
+    chown -R 10000:10000 /opt/flutter && \
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=/opt/flutter \
     /opt/flutter/bin/flutter config --no-analytics && \
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=/opt/flutter \
     /opt/flutter/bin/dart --disable-analytics
 ENV PATH="/opt/flutter/bin:${PATH}"
 

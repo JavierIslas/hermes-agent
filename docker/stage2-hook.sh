@@ -290,9 +290,22 @@ fi
 # (jobs.json) must stay readable by the unprivileged hermes runtime even
 # after root-context maintenance commands or scheduler writes. Skip the
 # recursive walk when the tree is already owned correctly (same warm-boot
-# gate as profiles/).
+# fast path as profiles/).
 if [ -d "$HERMES_HOME/cron" ] && tree_has_non_hermes_owner "$HERMES_HOME/cron"; then
     chown_hermes_tree "$HERMES_HOME/cron"
+fi
+
+# Always reset ownership of the Flutter SDK image tree (/opt/flutter) to
+# hermes on every boot. The SDK tarball is a git checkout whose cache the
+# flutter tool REWRITES on every invocation (bin/cache/*.stamp — verified
+# 2026-09-22: a read-only SDK breaks `flutter test` with Permission denied
+# in update_engine_version.sh), so the runtime user must own the tree. The
+# Dockerfile chowns it to the build-time hermes UID (10000); when HERMES_UID
+# remaps the user at boot (e.g. host UID 1000) the tree would become
+# unwritable for the actual runtime user. Same warm-boot fast path (skip the
+# recursive walk when already owned) and same rootless tolerance as above.
+if [ -d /opt/flutter ] && tree_has_non_hermes_owner /opt/flutter; then
+    chown_hermes_tree /opt/flutter
 fi
 
 # Always ensure logs/gateways is hermes-owned (#45258). Formerly healed by
