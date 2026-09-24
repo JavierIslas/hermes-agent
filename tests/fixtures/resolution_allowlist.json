@@ -145,11 +145,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/copilot_auth.py",
-    "symbol": "_gh_cli_candidates",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/dep_ensure.py",
     "symbol": "<module>",
     "kind": "bare_which"
@@ -705,13 +700,33 @@
     "kind": "known_path_table"
   },
   {
-    "path": "hermes_cli/copilot_auth.py",
-    "symbol": "_gh_cli_candidates",
-    "kind": "known_path_table"
-  },
-  {
     "path": "tools/computer_use/cua_backend_driver.py",
     "symbol": "_candidate_cua_driver_commands",
     "kind": "known_path_table"
+  },
+  {
+    "path": "tools/bot_desktop/browser.py",
+    "symbol": "_system_executable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/install.py",
+    "symbol": "_run",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "missing_binaries",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "package_manager",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/bot_desktop/runtime.py",
+    "symbol": "installable",
+    "kind": "bare_which"
   }
 ]

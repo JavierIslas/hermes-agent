@@ -96,3 +96,5 @@ def test_linux_live_cpu_facts_match_cpuinfo(cleared_fact_caches) -> None:
 
     assert facts.cpu_vendor() in cpuinfo
     assert facts.cpu_model() in cpuinfo
+
+
