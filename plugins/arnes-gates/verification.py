@@ -333,15 +333,26 @@ def _es_mypy(d: Path) -> bool:
 # Flutter/Dart (desde 2026-09-22).
 # =============================================================================
 def _leer_pubspec(d: Path) -> dict:
-    """Lee el pubspec.yaml como dict; {} si falta o no parsea (fail-open)."""
-    import yaml
+    """Lee el pubspec.yaml como dict; {} si falta o no parsea (fail-open).
 
+    Usa ruamel (dep core del repo) con fallback a PyYAML si estuviera.
+    NO importa yaml a secas: upstream hizo pyyaml opcional (feature flag
+    `pyyaml = false`, 2026-09) y un import incondicional revienta el venv
+    del fork (destapado por el merge upstream del 22/09: 11 tests rojos).
+    """
     pubspec = d / "pubspec.yaml"
     if not pubspec.exists():
         return {}
     try:
-        data = yaml.safe_load(pubspec.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError):
+        try:
+            from ruamel.yaml import YAML
+
+            data = YAML(typ="safe").load(pubspec.read_text(encoding="utf-8"))
+        except ImportError:
+            import yaml  # opcional desde upstream 2026-09
+
+            data = yaml.safe_load(pubspec.read_text(encoding="utf-8"))
+    except Exception:
         return {}
     return data if isinstance(data, dict) else {}
 
