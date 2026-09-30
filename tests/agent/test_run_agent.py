@@ -2294,7 +2294,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("todo_list", {"todos": []}),
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
-        ("clarify", {"question": "Continue?"}),
+        ("clarify", {"questions": [{"question": "Continue?"}]}),
         ("read_terminal", {}),
         ("desktop_preview", {"action": "read"}),
         ("drive_preview", {"action": "elements"}),
