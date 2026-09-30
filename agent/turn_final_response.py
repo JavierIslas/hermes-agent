@@ -337,8 +337,9 @@ def finish_text_response(
     # there, an interrupted turn keeps the raw text.
     from agent.turn_finalizer import apply_llm_output_transform
     _transformed = False
+    _pre_transform = None
     if not getattr(agent, "_interrupt_requested", False):
-        final_response, _transformed, _ = apply_llm_output_transform(
+        final_response, _transformed, _pre_transform = apply_llm_output_transform(
             agent, final_response, turn_id=getattr(agent, "_current_turn_id", "") or "", logger=logger,
         )
     if _transformed:
@@ -346,6 +347,14 @@ def finish_text_response(
             final_msg["api_content"] = final_response
         else:
             final_msg["content"] = final_response
+            # Worker/presenter pairing: the model must never replay its own dressed
+            # output (it adopts the presenter's persona as few-shot). Keep #44239's
+            # user-facing invariant (content = transformed text) but stamp the RAW
+            # model bytes on the api_content sidecar, exactly like #111761's promoted
+            # reasoning: build_api_messages replays the sidecar on the wire, so the
+            # prompt-cache prefix stays byte-stable AND the worker stays itself.
+            if isinstance(_pre_transform, str) and _pre_transform.strip():
+                final_msg["api_content"] = _pre_transform
 
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps

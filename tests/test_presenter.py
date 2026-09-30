@@ -554,12 +554,12 @@ class TestClarify:
         try:
             result = arnes_plugin._check_pre_tool_call(
                 "clarify",
-                {"question": "Que branch base?", "choices": ["develop", "main"]})
+                {"questions": [{"question": "Que branch base?", "choices": ["develop", "main"]}]})
         finally:
             _presenter_off(arnes_plugin)
         assert result == {
             "action": "modify",
-            "args": {"question": "Que camino, criatura?"},
+            "args": {"questions": [{"question": "Que camino, criatura?", "choices": ["develop", "main"]}]},
         }
 
     def test_clarify_modify_fail_open(self, arnes_plugin, tmp_path, monkeypatch):
@@ -570,7 +570,7 @@ class TestClarify:
         try:
             result = arnes_plugin._check_pre_tool_call(
                 "clarify",
-                {"question": "Que branch base?", "choices": ["develop", "main"]})
+                {"questions": [{"question": "Que branch base?", "choices": ["develop", "main"]}]})
         finally:
             _presenter_off(arnes_plugin)
         assert result is None
@@ -583,7 +583,7 @@ class TestClarify:
                       tool_calls=1)
         try:
             result = arnes_plugin._check_pre_tool_call(
-                "clarify", {"question": "Que branch base?"})
+                "clarify", {"questions": [{"question": "Que branch base?"}]})
         finally:
             _presenter_off(arnes_plugin)
         assert result is None
@@ -597,30 +597,29 @@ class TestClarify:
         try:
             result = arnes_plugin._check_pre_tool_call(
                 "clarify",
-                {"question": "Que branch base?", "choices": ["develop", "main"]})
+                {"questions": [{"question": "Que branch base?", "choices": ["develop", "main"]}]})
         finally:
             _presenter_off(arnes_plugin)
         assert result and result["action"] == "modify"
-        dressed = result["args"]["question"]
+        dressed = result["args"]["questions"][0]["question"]
 
         # Simulamos la plataforma: el usuario ve la vestida y elige develop.
         seen: Dict[str, Any] = {}
 
-        def platform_callback(question, choices, multi_select=False):
-            seen["question"] = question
-            seen["choices"] = choices
-            return "develop"
+        def platform_callback(questions):
+            seen["questions"] = questions
+            return {"answers": {questions[0]["qid"]: "develop"}, "outcome": "submitted"}
 
         from tools.clarify_tool import clarify_tool
         raw = clarify_tool(
-            question=dressed, choices=["develop", "main"],
-            multi_select=False, callback=platform_callback)
+            [{"question": dressed, "choices": ["develop", "main"]}],
+            callback=platform_callback)
         payload = json.loads(raw)
         # El worker recibe eleccion canonica, no presentacion.
-        assert payload["user_response"] == "develop"
+        assert payload["responses"][0]["user_response"] == "develop"
         # Y la plataforma vio la pregunta vestida.
-        assert seen["question"] == dressed
-        assert seen["choices"][0] == "develop (Recommended)"
+        assert seen["questions"][0]["question"] == dressed
+        assert seen["questions"][0]["choices"][0] == "develop (Recommended)"
 
 
 # ----------------------------------------------------------------------------

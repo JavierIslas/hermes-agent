@@ -722,10 +722,13 @@ def _check_pre_tool_call(
     # plataforma renderiza la pregunta vestida y clarify_tool devuelve la
     # eleccion canonica (strip_recommended). Choices intactas: son canonicas.
     # Sin routing (off / sin worker_mode / sin tools en el turno): None.
+    # Adaptado al schema multi-question del core (question -> questions[],
+    # merge 2026-09): se viste SOLO el texto de cada pregunta.
     if tool_name == "clarify":
-        question = args.get("question", "")
+        questions_arg = args.get("questions")
         if (
-            question
+            isinstance(questions_arg, list)
+            and questions_arg
             and _presenter_enabled_for(platform=_platform_kw(_kw))
             and gate.get("presenter_tool_calls", 0) > 0
             and _PRESENTER_CTX is not None
@@ -735,12 +738,28 @@ def _check_pre_tool_call(
                     _PRESENTER_CTX.llm,
                     get_config=_PRESENTER_CTX.get_config,
                 )
-                dressed = pres.dress_question(question)
+                dressed_any = False
+                dressed_questions = []
+                for q in questions_arg:
+                    if (
+                        isinstance(q, dict)
+                        and isinstance(q.get("question"), str)
+                        and q["question"].strip()
+                    ):
+                        dressed = pres.dress_question(q["question"])
+                        if (
+                            dressed
+                            and dressed.strip()
+                            and dressed.strip() != q["question"].strip()
+                        ):
+                            dressed_any = True
+                            dressed_questions.append({**q, "question": dressed})
+                            continue
+                    dressed_questions.append(q)
+                if dressed_any:
+                    return {"action": "modify", "args": {"questions": dressed_questions}}
             except Exception as exc:
                 logger.debug("presenter: fail-open en clarify (%s)", exc)
-                dressed = None
-            if dressed and dressed.strip() and dressed.strip() != question.strip():
-                return {"action": "modify", "args": {"question": dressed}}
         return None
 
     # Write gate: write_file y patch requieren scope + read_before_write.

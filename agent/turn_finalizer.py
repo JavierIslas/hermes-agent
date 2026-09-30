@@ -259,8 +259,19 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
         # verification candidate that matches the final response is not duplicated at budget exhaustion.
         # (#65919 §7)
         _tail = messages[-1] if messages else None
+        _raw_tail = None
+        _recorded = getattr(agent, "_llm_output_transform", None)
+        if (
+            isinstance(_recorded, tuple) and len(_recorded) == 3
+            and isinstance(_recorded[2], str) and _recorded[2].strip()
+        ):
+            _raw_tail = _recorded[2]
         if not isinstance(_tail, dict) or _tail.get("role") != "assistant":
             append_message(messages, {"role": "assistant", "content": final_response})
+            if _raw_tail and _raw_tail != final_response:
+                # Same pairing rule as the normal text turn: replay sidecar keeps
+                # the RAW model bytes, content keeps the dressed text (#44239).
+                messages[-1]["api_content"] = _raw_tail
         elif (
             _tail.get("content") != final_response
             and _assistant_row_missing_visible_text(_tail)
