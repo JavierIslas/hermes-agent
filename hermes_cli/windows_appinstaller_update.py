@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Check for an App Installer update for the running MSIX package.
 
 The out-of-store desktop installs are App Installer owned: the OS registered
@@ -8,7 +7,7 @@ shows its own prompt + tears down before the OS applies the swap.
 
 Run with the BUNDLED payload python (the winrt package ships there):
 
-    <payload>/tools/<python-entry>/python.exe scripts/check-appinstaller-update.py
+    <payload>/tools/<python-entry>/python.exe -P -m hermes_cli.windows_appinstaller_update
 
 Exit codes:
   0  no update available, or this process has no package identity

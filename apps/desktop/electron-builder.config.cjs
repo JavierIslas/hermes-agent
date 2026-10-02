@@ -220,6 +220,10 @@ module.exports = {
     executableName: windowsExecutableName,
     legalTrademarks: displayName,
     target: ['msix'],
+    // The updaters' relaunch waiter is PowerShell run outside the package. The
+    // sealed payload's snapshot omits scripts/, so it ships as a resource
+    // (RELAUNCH_WAITER_SCRIPT in electron/updater/relaunch-waiter.ts).
+    extraResources: [{ from: 'scripts/update-relaunch-waiter.ps1', to: 'update-relaunch-waiter.ps1' }],
     ...windowsSigning()
   },
   msix: {
