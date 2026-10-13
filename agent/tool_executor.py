@@ -676,11 +676,16 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
 
-        block_msg, modified_args, halt_loop = _dispatch_pre_tool_call_hooks(
+        _hook_out = _dispatch_pre_tool_call_hooks(
             ref.name,
             ref.args,
             **tool_hook_ids(agent, ref.task_id, ref.call_id),
             middleware_trace=list(ref.trace),
+        )
+        # Fork (arnes-gates D5): the dispatcher returns a 3-tuple ending in
+        # halt_loop; upstream mocks may still return the 2-tuple shape.
+        block_msg, modified_args, halt_loop = (
+            (_hook_out + (False,))[:3] if isinstance(_hook_out, tuple) else (None, None, False)
         )
         return block_msg, (ref.args if modified_args is None else modified_args), halt_loop
     except Exception:
@@ -714,7 +719,7 @@ def _dispatch_authorized_once(
     halt_loop = False
     if block_message is None:
         block_error_type = "plugin_block"
-        resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
+        resolve = lambda: _pre_tool_block(agent, ref)
         resolved = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         block_message, ref.args, halt_loop = resolved
         state.args = ref.args
@@ -1967,6 +1972,6 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
 
 __all__ = [
     "execute_tool_calls_concurrent",
-    "execute_tool_calls_sequential",
     "execute_tool_calls_segmented",
+    "execute_tool_calls_sequential",
 ]
