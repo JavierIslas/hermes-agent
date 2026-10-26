@@ -206,18 +206,26 @@ test('npm configuration name casing does not invalidate a completed install', as
 }, 30000)
 
 // A stand-in npm: `ci` fails with ENOTEMPTY (or `failure`) while a stuck
-// node_modules/.bin entry survives, and records every ci run.
-function fakeNpm(root, failure) {
+// node_modules/.bin entry survives, and records every ci run. With `once` it
+// fires the failure exactly one time (marker file), then succeeds: the shape
+// of a transient race like ETXTBSY.
+function fakeNpm(root, failure, { once = false } = {}) {
   const [, realCli] = npmCommand()
   const dir = join(root, 'fake-npm')
   mkdirSync(join(dir, 'node_modules'), { recursive: true })
   symlinkSync(dirname(createRequire(realCli).resolve('semver/package.json')), join(dir, 'node_modules/semver'), 'junction')
+  const marker = join(root, 'failure-fired')
+  const armed = once
+    ? `!fs.existsSync(${JSON.stringify(marker)})`
+    : `fs.existsSync('node_modules/.bin/stuck')`
+  const fire = once ? `fs.writeFileSync(${JSON.stringify(marker)}, '')` : ''
   const cli = join(dir, 'npm-cli.js')
   writeFileSync(cli, `const fs = require('fs'), path = require('path')
 const args = process.argv.slice(2)
 if (args[0] === '--version') { console.log('10.9.0'); process.exit(0) }
 fs.appendFileSync(path.join(${JSON.stringify(root)}, 'ci-runs'), 'ci\\n')
-if (fs.existsSync('node_modules/.bin/stuck')) {
+if (${armed}) {
+  ${fire}
   const logs = args.find(arg => arg.startsWith('--logs-dir=')).slice('--logs-dir='.length)
   fs.writeFileSync(path.join(logs, 'debug-0.log'), 'error code ${failure}\\n')
   process.exit(1)
@@ -238,6 +246,35 @@ test('npm ci ENOTEMPTY clears node_modules and retries once', async () => {
   prepareNodeDependencies({ source, workspaces: ['web'], env: fakeNpm(source, 'ENOTEMPTY') })
   expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\nci\n')
   expect(existsSync(join(source, 'node_modules/.bin/stuck'))).toBe(false)
+}, 30000)
+
+// Under container builders (overlayfs + BuildKit) npm's extractor can still
+// hold a package binary open for writing while its postinstall runs it (the
+// classic esbuild install.js lane): npm exits 1 with ETXTBSY in its debug log.
+// The tree is intact, so one retry settles it — without wiping node_modules.
+test('npm ci ETXTBSY retries once without wiping node_modules', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  // The fake npm's ci installs nothing; a sentinel proves the retry kept the
+  // tree (the ENOTEMPTY lane would have wiped it).
+  mkdirSync(join(source, 'node_modules'), { recursive: true })
+  writeFileSync(join(source, 'node_modules/sentinel'), 'intact')
+  prepareNodeDependencies({ source, workspaces: ['web'], env: fakeNpm(source, 'ETXTBSY', { once: true }) })
+  expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\nci\n')
+  expect(readFileSync(join(source, 'node_modules/sentinel'), 'utf8')).toBe('intact')
+}, 30000)
+
+// The retry is bounded: if the same transient code fires again on the retry,
+// the failure surfaces instead of looping.
+test('npm ci ETXTBSY twice surfaces the failure', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  stuckNodeModules(source)
+  // Armed on the stuck marker, which the ETXTBSY lane deliberately keeps, so
+  // the retry fails the same way and must propagate.
+  expect(() => prepareNodeDependencies({ source, workspaces: ['web'], env: fakeNpm(source, 'ETXTBSY') })).toThrow()
+  expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\nci\n')
+  expect(existsSync(join(source, 'node_modules/.bin/stuck'))).toBe(true)
 }, 30000)
 
 test('any other npm ci failure keeps node_modules and does not retry', async () => {

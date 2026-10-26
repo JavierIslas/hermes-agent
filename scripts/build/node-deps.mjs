@@ -69,19 +69,31 @@ function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }
 // cannot clear (ENOTEMPTY, #75584); only deleting node_modules recovers it. npm's
 // debug log names the code while stdio stays on the terminal, so give each run
 // its own logs dir and retry once only on that code. Other failures keep the tree.
+// ETXTBSY joins that class: under container builders (overlayfs + BuildKit) npm
+// extracts a package while its postinstall already runs the binary (the classic
+// `esbuild install.js` lane) and the write handle is released a beat later. The
+// tree is intact; a single retry settles it, without wiping node_modules.
 function runNpmCi(node, npm, args, { source, env }) {
   const logsDir = mkdtempSync(join(tmpdir(), 'hermes-npm-logs-'))
   // Builders set CI=1, which turns npm's spinner off. Ask for it back: npm
   // still shows it only on a terminal. Kept out of `args`, which keys the receipt.
   const run = () => execFileSync(node, [npm, ...args, '--progress=true', `--logs-dir=${logsDir}`],
     { cwd: source, env, stdio: 'inherit' })
+  const loggedCodes = () => readdirSync(logsDir).flatMap(name => {
+    const log = readFileSync(join(logsDir, name), 'utf8')
+    return ['ENOTEMPTY', 'ETXTBSY'].filter(code => log.includes(code))
+  })
   try {
     run()
   } catch (error) {
-    const logged = readdirSync(logsDir).some(name => readFileSync(join(logsDir, name), 'utf8').includes('ENOTEMPTY'))
-    if (!logged) throw error
-    console.log('node-deps: npm ci hit ENOTEMPTY; removing node_modules and retrying once...')
-    rmSync(join(source, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
+    const codes = loggedCodes()
+    if (codes.length === 0) throw error
+    if (codes.includes('ENOTEMPTY')) {
+      console.log('node-deps: npm ci hit ENOTEMPTY; removing node_modules and retrying once...')
+      rmSync(join(source, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
+    } else {
+      console.log('node-deps: npm ci hit ETXTBSY (postinstall raced the extractor); retrying once...')
+    }
     run()
   } finally {
     rmSync(logsDir, { recursive: true, force: true })
