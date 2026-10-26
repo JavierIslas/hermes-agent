@@ -81,6 +81,25 @@ class TestFlutterTests:
         ev = _ev().evaluate_test_evidence(out)
         assert ev.verdict == "fail"
 
+    def test_excepcion_runtime_en_linea_propia_no_es_compile_error(self):
+        # DioException.toString() en un debugPrint de producción imprime la
+        # causa en línea propia: "Error: SocketException: ...". Es ruido de un
+        # fallo de red EXPECTADO (el test pasa), no un error de compilación.
+        # Caso real: OcrService.checkHealth "returns false on network error"
+        # envenenaba TODA la evidencia de tests del proyecto mobile.
+        out = (
+            "00:08 +130: test/services/ocr_service_test.dart: checkHealth returns true on 200\n"
+            "[OcrService] Health check falló: DioException [connection error]: "
+            "The connection errored: Failed host lookup: 'unreachable.invalid'\n"
+            "Error: SocketException: Failed host lookup: 'unreachable.invalid' "
+            "(OS Error: Name or service not known, errno = -2)\n"
+            "00:08 +131: test/services/ocr_service_test.dart: checkHealth returns false on network error\n"
+            "00:31 +293: All tests passed!\n"
+        )
+        ev = _ev().evaluate_test_evidence(out)
+        assert ev.verdict == "pass"
+        assert "293" in ev.reason
+
     def test_no_sdk_es_fail_open(self):
         out = "flutter: command not found\n"
         ev = _ev().evaluate_test_evidence(out)

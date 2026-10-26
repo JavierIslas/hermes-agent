@@ -101,8 +101,25 @@ _RE_ANALYZE_ERRORS = re.compile(r"(\d+) errors? found")
 # (location + Error:) o "Error:" al inicio de línea (CLI del compilador).
 # Angosto a propósito: `\bError: ` a secas matchearía tracebacks de Python
 # ("OSError: ...") y reclasificaría fallos de env de pytest como fail.
+# D13 (2026-10-10, caso real mobile): `^Error: ` a secas también matchea
+# EXCEPCIONES RUNTIME impresas por debugPrint en tests que pasan — p.ej.
+# DioException.toString() pone la causa en línea propia ("Error:
+# SocketException: Failed host lookup ..."), ruido esperado del test
+# OcrService.checkHealth "returns false on network error", que envenenaba
+# TODA la evidencia de tests del proyecto. El `^Error: ` del compilador se
+# ancla a los mensajes del front-end de dart (Couldn't resolve / Can't /
+# Target of URI / Getter not found / etc.); las excepciones runtime
+# (SocketException, TimeoutException, ...) NO cuentan como compile error.
+# El path .dart:<line>:<col>: Error: queda igual (siempre real).
+_RE_DART_COMPILE_FRONTEND = re.compile(
+    r"^Error: (?:Couldn't|Can't|Unable to|Target of URI|Getter not found|"
+    r"Method not found|Setter not found|No such|Undefined|A value of type|"
+    r"The argument type|Expected|Too many|Not enough|Library|Couldn't find|"
+    r"Error when|Compilation|Spawn|dartdev)",
+    re.MULTILINE,
+)
 _RE_DART_COMPILE_ERROR = re.compile(
-    r"(?:\.dart:\d+:\d+:\s*Error: |^Error: )", re.MULTILINE
+    r"(?:\.dart:\d+:\d+:\s*Error: )", re.MULTILINE
 )
 
 
@@ -120,7 +137,7 @@ def evaluate_test_evidence(output: Optional[str]) -> Evidence:
     # ("Getter not found", "Target of URI doesn't exist") y el patrón
     # genérico los reclasificaría como fail_open de env. Un compile error
     # es código roto: fail real.
-    if _RE_DART_COMPILE_ERROR.search(output):
+    if _RE_DART_COMPILE_ERROR.search(output) or _RE_DART_COMPILE_FRONTEND.search(output):
         return Evidence(
             "fail",
             "error de compilación dart/flutter. El código no compila — "
@@ -282,7 +299,7 @@ def _evaluate_flutter_tests(output: str) -> Optional[Evidence]:
         )
 
     # Error de compilación dart = código roto (no environment).
-    if _RE_DART_COMPILE_ERROR.search(output):
+    if _RE_DART_COMPILE_ERROR.search(output) or _RE_DART_COMPILE_FRONTEND.search(output):
         return Evidence(
             "fail",
             "flutter: error de compilación dart. El código no compila — "
