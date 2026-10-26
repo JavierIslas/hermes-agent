@@ -340,7 +340,17 @@ COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 COPY apps/shared/ apps/shared/
 COPY scripts/build/node-deps.mjs scripts/build/node-deps.mjs
-ENV npm_config_install_links=false
+# npm ci here runs with npm's defaults (2 retries, 60s per stalled read) and a
+# single flaky-network window fails the whole build. Match the sidecar install
+# below (--fetch-retries=5) and stretch the per-attempt timeout: registry reads
+# stall mid-transfer on slow links long before the connection itself dies.
+# ENV vars, not script args: node-deps.mjs hashes its args into its reuse
+# receipt, and dev machines reuse receipts computed without these.
+ENV npm_config_install_links=false \
+    npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_mintimeout=10000 \
+    npm_config_fetch_retry_maxtimeout=120000 \
+    npm_config_fetch_timeout=300000
 RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web
 
 COPY pyproject.toml uv.lock ./

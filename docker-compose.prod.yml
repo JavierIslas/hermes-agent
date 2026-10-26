@@ -55,6 +55,7 @@ services:
       - gateway
     volumes:
       - ~/.hermes:/opt/data
+      - /home/ips/workspace:/workspace
       # Mismo fix DNS que el gateway: sin este mount el dashboard queda con
       # la copia congelada de resolv.conf que Docker tomó al crearlo y muere
       # al cambiar de red (ver docker-compose.yml del gateway).
