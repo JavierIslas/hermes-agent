@@ -16,6 +16,7 @@ import type { CatalogTranslations } from './types_catalog'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
+import type { CronControlCopy } from './types_cron_control'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
@@ -27,7 +28,7 @@ import type { NoticeTranslations } from './types_notices'
 import type { NotificationSettingsTranslations } from './types_notifications'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginPreviewAccessTranslations } from './types_plugin_preview_access'
-import type { PluginUpdateTranslations } from './types_plugin_update'
+import type { PluginUpdateAllTranslations, PluginUpdateTranslations } from './types_plugin_update'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { RightSidebarTranslations } from './types_right_sidebar'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
@@ -49,6 +50,9 @@ export type Locale = string
 export interface ErrorCardCopy {
   title: string | ((provider: string, model: string) => string)
   body: string | ((provider: string, model: string) => string)
+  /** Body when the failure says a retry will not help (`retryable: false`), for a code whose body
+   *  otherwise tells the user to retry. */
+  bodyNoRetry?: string | ((provider: string, model: string) => string)
 }
 
 export type ToolTitleKey =
@@ -632,8 +636,6 @@ export interface Translations extends NoticeTranslations {
       openFolder: string
       rescan: string
       reveal: string
-      enable: string
-      disable: string
       failed: string
       kinds: { bundled: string; disk: string; runtime: string }
       installModal: {
@@ -1894,9 +1896,14 @@ export interface Translations extends NoticeTranslations {
     edit: string
     archive: string
     skillArchivedTitle: string
+    lock: string
+    locked: string
+    lockHint: string
+    unlockedHint: string
     skillArchivedMessage: string
     tabPlugins: string
     plugins: PluginUpdateTranslations &
+      PluginUpdateAllTranslations &
       PluginPreviewAccessTranslations & {
         agentTitle: string
         agentBlurb: string
@@ -2335,6 +2342,32 @@ export interface Translations extends NoticeTranslations {
     restartFailedManualDetail: string
     restartAgain: string
     openLogs: string
+    relayLink: {
+      title: string
+      badge: string
+      intro: (platform: string) => string
+      link: (platform: string) => string
+      linkAnother: (platform: string) => string
+      linkedAccounts: string
+      unlink: string
+      unlinkFailed: string
+      stepOpen: (platform: string) => string
+      stepSend: string
+      open: (platform: string) => string
+      copy: string
+      copied: string
+      copyFailed: (command: string) => string
+      waiting: string
+      linked: (platform: string) => string
+      expired: string
+      refused: (platform: string) => string
+      qrAlt: (platform: string) => string
+      managed: string
+      managedNote: (platform: string) => string
+      managedIntro: string
+      openPortal: string
+      noNewAccount: (platform: string) => string
+    }
     telegramQr: {
       title: string
       subtitle: string
@@ -2460,9 +2493,6 @@ export interface Translations extends NoticeTranslations {
       deleteOn: (gateway: string) => string
       /** At-rest local default pill: device, not Home, and the click's consequence. */
       localDevice: string
-      switchDeviceTitle: string
-      switchDeviceDesc: string
-      switchDeviceConfirm: string
       installDeviceTitle: string
       installDeviceDesc: string
       installDeviceConfirm: string
@@ -2587,6 +2617,7 @@ export interface Translations extends NoticeTranslations {
 
   cron: {
     close: string
+    control: CronControlCopy
     title: string
     count: (count: number) => string
     search: string
@@ -2852,7 +2883,6 @@ export interface Translations extends NoticeTranslations {
       backgroundRunning: string
       draftSession: string
       handoffOrigin: (platform: string) => string
-      continuationOrigin: string
       ownedByProfile: (profile: string) => string
       renamed: string
       renameFailed: string
@@ -3526,6 +3556,8 @@ export interface Translations extends NoticeTranslations {
       sendsOnRoute: (level: string) => string
       updateFailed: string
       fastFailed: string
+      daybreak: string
+      daybreakFailed: string
     }
     gatewayMenu: {
       gateway: string
@@ -3641,6 +3673,15 @@ export interface Translations extends NoticeTranslations {
           subagent_definitions: string
           system_prompt: string
           tool_definitions: string
+        }
+        compact: {
+          action: string
+          busyHint: string
+          confirm: string
+          hint: string
+          question: string
+          questionNamed: (title: string) => string
+          working: string
         }
         empty: string
         loading: string
@@ -4027,6 +4068,11 @@ export interface Translations extends NoticeTranslations {
       authorized: (server: string) => string
       failed: (server: string) => string
       toolCount: (count: number) => string
+      launchCommand: (target: string) => string
+      launchRemote: (target: string) => string
+      /** The env var names a stdio server adds (comma-joined); values never reach the card. */
+      launchEnv: (keys: string) => string
+      launchCwd: (dir: string) => string
       envRequired: string
       sendFailed: string
       reloadFailed: string
